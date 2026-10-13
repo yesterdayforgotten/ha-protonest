@@ -1,5 +1,8 @@
 <p align="center">
-  <img alt="ProtoNest" src="https://raw.githubusercontent.com/yesterdayforgotten/ha-protonest/main/custom_components/protonest/brand/logo@2x.png" width="260">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/yesterdayforgotten/ha-protonest/main/custom_components/protonest/brand/dark_logo@2x.png">
+    <img alt="ProtoNest" src="https://raw.githubusercontent.com/yesterdayforgotten/ha-protonest/main/custom_components/protonest/brand/logo@2x.png" width="260">
+  </picture>
 </p>
 
 # ProtoNest
