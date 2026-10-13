@@ -9,10 +9,24 @@ Unofficial: Google can change or close this API at any time.
 
 ## Install
 
+### With HACS
+
+1. In Home Assistant, open **HACS**, then the **⋮** menu (top right) →
+   **Custom repositories**.
+2. Enter `https://github.com/yesterdayforgotten/ha-protonest`, choose the type
+   **Integration**, and select **Add**.
+3. Search HACS for **ProtoNest**, open it, and select **Download**.
+4. Restart Home Assistant.
+5. Get credentials (below), then go to **Settings → Devices & services → Add
+   integration → ProtoNest** and paste them.
+
+HACS then offers ProtoNest updates like any other integration.
+
+### By hand
+
 1. Copy `custom_components/protonest` into your Home Assistant configuration's
    `custom_components/` folder and restart Home Assistant.
-2. Get credentials (below), then go to **Settings → Devices & services → Add
-   integration → ProtoNest** and paste them.
+2. Get credentials (below), then add the integration as in step 5 above.
 
 ### Credentials
 

@@ -1,12 +1,15 @@
 {
   "domain": "protonest",
   "name": "ProtoNest",
-  "codeowners": [],
+  "codeowners": [
+    "@yesterdayforgotten"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/yesterdayforgotten/ha-protonest",
   "integration_type": "hub",
   "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/yesterdayforgotten/ha-protonest/issues",
   "loggers": [
     "custom_components.protonest"
   ],
