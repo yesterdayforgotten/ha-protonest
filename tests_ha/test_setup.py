@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.util import slugify
 
+from custom_components.protonest.climate import climate_name
 from custom_components.protonest.const import CONF_COOKIES, CONF_ISSUE_TOKEN, DOMAIN
 from tests.home import (
     ROOM1_NAME, ROOM2_NAME, ROOM3_NAME, ROOM4_NAME, THERMOSTAT1, THERMOSTAT1_NAME, THERMOSTAT2_NAME, THERMOSTAT3_NAME,
@@ -49,7 +50,7 @@ async def test_setup_creates_devices_and_climate(hass, fake_client):
     entry, _ = await setup(hass, fake_client)
     assert entry.state is ConfigEntryState.LOADED
     for name in (T1, T2, T3):
-        st = hass.states.get(f"climate.{name}")
+        st = hass.states.get(f"climate.{name}_thermostat")
         assert st is not None, name
         assert st.state == "cool"
         assert set(st.attributes["hvac_modes"]) == {"off", "heat", "cool", "heat_cool"}
@@ -59,10 +60,17 @@ async def test_setup_creates_devices_and_climate(hass, fake_client):
     assert hass.states.get(sensor_entity(ROOM1_NAME, "battery_voltage")) is not None
 
 
+@pytest.mark.parametrize(("device", "entity"), [
+    ("Living Room", "Thermostat"), ("Hallway Thermostat", None), ("Den thermostat", None), (None, "Thermostat"),
+])
+def test_climate_name_is_not_doubled(device, entity):
+    assert climate_name(device) == entity
+
+
 async def test_humidity_only_where_there_is_a_humidifier(hass, fake_client):
     await setup(hass, fake_client)
-    assert hass.states.get(f"climate.{T1}").attributes.get("humidity") == 40
-    assert "humidity" not in hass.states.get(f"climate.{T2}").attributes
+    assert hass.states.get(f"climate.{T1}_thermostat").attributes.get("humidity") == 40
+    assert "humidity" not in hass.states.get(f"climate.{T2}_thermostat").attributes
     assert hass.states.get(f"switch.{T1}_humidity_control") is not None
     assert hass.states.get(f"switch.{T2}_humidity_control") is None
     assert hass.states.get(f"select.{T1}_humidifier_operation").state == "Only with heat"
@@ -95,30 +103,30 @@ async def test_settings_entities(hass, fake_client):
 
 async def test_set_temperature_writes_celsius(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    await call(hass, "climate", "set_temperature", f"climate.{T1}", temperature=74)
+    await call(hass, "climate", "set_temperature", f"climate.{T1}_thermostat", temperature=74)
     trait = client.last_write("target_temperature_settings")
     assert trait.targetTemperature.coolingTarget.value == pytest.approx(23.3333, abs=1e-3)
-    assert hass.states.get(f"climate.{T1}").attributes["temperature"] == 74
+    assert hass.states.get(f"climate.{T1}_thermostat").attributes["temperature"] == 74
 
 
 async def test_mode_off_then_heat_supplies_missing_heating_setpoint(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    await call(hass, "climate", "set_hvac_mode", f"climate.{T3}", hvac_mode="off")
+    await call(hass, "climate", "set_hvac_mode", f"climate.{T3}_thermostat", hvac_mode="off")
     assert client.last_write("target_temperature_settings").enabled.value is False
-    assert hass.states.get(f"climate.{T3}").state == "off"
-    await call(hass, "climate", "set_hvac_mode", f"climate.{T3}", hvac_mode="heat")
+    assert hass.states.get(f"climate.{T3}_thermostat").state == "off"
+    await call(hass, "climate", "set_hvac_mode", f"climate.{T3}_thermostat", hvac_mode="heat")
     trait = client.last_write("target_temperature_settings")
     assert trait.enabled.value is True
     assert trait.targetTemperature.heatingTarget.value == pytest.approx(20.0)  # was never set
-    assert hass.states.get(f"climate.{T3}").attributes["temperature"] == 68
+    assert hass.states.get(f"climate.{T3}_thermostat").attributes["temperature"] == 68
 
 
 async def test_eco_preset_and_humidity(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    await call(hass, "climate", "set_preset_mode", f"climate.{T1}", preset_mode="eco")
+    await call(hass, "climate", "set_preset_mode", f"climate.{T1}_thermostat", preset_mode="eco")
     assert client.last_write("eco_mode_state").ecoMode == 2  # MANUAL_ECO
-    assert hass.states.get(f"climate.{T1}").attributes["preset_mode"] == "eco"
-    await call(hass, "climate", "set_humidity", f"climate.{T1}", humidity=47)
+    assert hass.states.get(f"climate.{T1}_thermostat").attributes["preset_mode"] == "eco"
+    await call(hass, "climate", "set_humidity", f"climate.{T1}_thermostat", humidity=47)
     assert client.last_write("humidity_control_settings").targetHumidity.value == 45  # app's 5% steps
 
 
@@ -150,15 +158,15 @@ async def test_switch_number_select_button(hass, fake_client):
 
 async def test_actions(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    await call(hass, DOMAIN, "run_fan", f"climate.{T2}", duration={"minutes": 45})
+    await call(hass, DOMAIN, "run_fan", f"climate.{T2}_thermostat", duration={"minutes": 45})
     fan = client.last_write("fan_control_settings")
     assert fan.timerDuration.seconds == 2700 and fan.timerEnd.seconds > datetime.now(UTC).timestamp()
-    await call(hass, DOMAIN, "schedule_add", f"climate.{T1}", schedule="cool", day="mon", time="12:45:00", temperature=82)
+    await call(hass, DOMAIN, "schedule_add", f"climate.{T1}_thermostat", schedule="cool", day="mon", time="12:45:00", temperature=82)
     sched = client.last_write("cool_schedule_settings")
     assert any(sp.secondsInDay == 45900 for sp in sched.setpoints.values())
-    await call(hass, DOMAIN, "schedule_remove", f"climate.{T1}", schedule="cool", day="mon", time="12:45:00")
+    await call(hass, DOMAIN, "schedule_remove", f"climate.{T1}_thermostat", schedule="cool", day="mon", time="12:45:00")
     assert all(sp.secondsInDay != 45900 for sp in client.last_write("cool_schedule_settings").setpoints.values())
-    await call(hass, DOMAIN, "average_sensors", f"climate.{T3}",
+    await call(hass, DOMAIN, "average_sensors", f"climate.{T3}_thermostat",
                sensors=[sensor_entity(ROOM1_NAME, "temperature"), sensor_entity(ROOM2_NAME, "temperature")])
     assert len(client.last_write("remote_comfort_sensing_settings").multiSensorSettings.multiSensorGroup) == 2
 
@@ -168,7 +176,7 @@ async def test_invalid_values_are_reported_not_sent(hass, fake_client):
 
     _, client = await setup(hass, fake_client)
     with pytest.raises(ServiceValidationError):
-        await call(hass, DOMAIN, "schedule_add", f"climate.{T1}", schedule="cool", day="mon", time="12:50:00", temperature=82)
+        await call(hass, DOMAIN, "schedule_add", f"climate.{T1}_thermostat", schedule="cool", day="mon", time="12:50:00", temperature=82)
     assert client.writes == []
 
 
@@ -191,7 +199,7 @@ async def test_auth_failure_while_running_starts_reauth(hass, fake_client):
     client.fail_auth()
     await hass.async_block_till_done()
     assert any(f["context"]["source"] == SOURCE_REAUTH for f in hass.config_entries.flow.async_progress())
-    assert hass.states.get(f"climate.{T1}").state == "unavailable"
+    assert hass.states.get(f"climate.{T1}_thermostat").state == "unavailable"
 
 
 async def test_rotated_cookies_are_saved(hass, fake_client):
@@ -207,13 +215,13 @@ async def test_unresponsive_thermostat_goes_unavailable_except_online(hass, fake
     _, client = await setup(hass, fake_client)
     client.set_responsive(THERMOSTAT1, False)
     await hass.async_block_till_done()
-    assert hass.states.get(f"climate.{T1}").state == "unavailable"
+    assert hass.states.get(f"climate.{T1}_thermostat").state == "unavailable"
     assert hass.states.get(f"switch.{T1}_sunblock").state == "unavailable"
     assert hass.states.get(f"binary_sensor.{T1}_online").state == "off"  # still available
-    assert hass.states.get(f"climate.{T2}").state == "cool"  # others unaffected
+    assert hass.states.get(f"climate.{T2}_thermostat").state == "cool"  # others unaffected
     client.set_responsive(THERMOSTAT1, True)
     await hass.async_block_till_done()
-    assert hass.states.get(f"climate.{T1}").state == "cool"
+    assert hass.states.get(f"climate.{T1}_thermostat").state == "cool"
     assert hass.states.get(f"binary_sensor.{T1}_online").state == "on"
 
 
@@ -230,16 +238,16 @@ async def test_override_raises_a_notification(hass, fake_client):
 
 async def test_set_temperature_with_a_mode_sets_that_modes_setpoint(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    await call(hass, "climate", "set_temperature", f"climate.{T1}", hvac_mode="heat", temperature=66)
+    await call(hass, "climate", "set_temperature", f"climate.{T1}_thermostat", hvac_mode="heat", temperature=66)
     trait = client.last_write("target_temperature_settings")
     assert trait.targetTemperature.heatingTarget.value == pytest.approx(18.8889, abs=1e-3)
-    assert hass.states.get(f"climate.{T1}").state == "heat"
-    assert hass.states.get(f"climate.{T1}").attributes["temperature"] == 66
+    assert hass.states.get(f"climate.{T1}_thermostat").state == "heat"
+    assert hass.states.get(f"climate.{T1}_thermostat").attributes["temperature"] == 66
 
 
 async def test_heat_cool_with_no_stored_setpoints_uses_defaults(hass, fake_client):
     _, client = await setup(hass, fake_client)
-    rid = next(e.unique_id for e in er.async_get(hass).entities.values() if e.entity_id == f"climate.{T2}").split("-")[0]
+    rid = next(e.unique_id for e in er.async_get(hass).entities.values() if e.entity_id == f"climate.{T2}_thermostat").split("-")[0]
 
     def forget(trait):
         trait.enabled.value = False
@@ -247,7 +255,7 @@ async def test_heat_cool_with_no_stored_setpoints_uses_defaults(hass, fake_clien
         trait.targetTemperature.coolingTarget.value = 0.0
 
     await client.async_update(rid, "target_temperature_settings", forget)
-    await call(hass, "climate", "set_hvac_mode", f"climate.{T2}", hvac_mode="heat_cool")
+    await call(hass, "climate", "set_hvac_mode", f"climate.{T2}_thermostat", hvac_mode="heat_cool")
     tt = client.last_write("target_temperature_settings").targetTemperature
     assert (tt.heatingTarget.value, tt.coolingTarget.value) == (pytest.approx(20.0), pytest.approx(25.5))
 
@@ -258,7 +266,7 @@ async def test_pair_sensor_refuses_a_thermostats_own_sensor(hass, fake_client):
     _, client = await setup(hass, fake_client)
     assert hass.states.get(f"sensor.{T1}_temperature") is not None
     with pytest.raises(ServiceValidationError):
-        await call(hass, DOMAIN, "pair_sensor", f"climate.{T3}", sensor=f"sensor.{T1}_temperature")
+        await call(hass, DOMAIN, "pair_sensor", f"climate.{T3}_thermostat", sensor=f"sensor.{T1}_temperature")
     assert client.writes == []
 
 

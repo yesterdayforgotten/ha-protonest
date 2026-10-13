@@ -98,13 +98,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry, as
         "async_schedule_remove")
 
 
+def climate_name(device_name: str | None) -> str | None:
+    """The climate entity's name: a thermostat named "Living Room" becomes "Living
+    Room Thermostat" (climate.living_room_thermostat), but one already named
+    "Hallway Thermostat" keeps that name rather than doubling it."""
+    return None if (device_name or "").lower().endswith("thermostat") else "Thermostat"
+
+
 class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
-    _attr_name = None  # the device's main entity
     _attr_preset_modes = [PRESET_NONE, PRESET_ECO]
     _attr_fan_modes = [FAN_AUTO, FAN_ON]
 
     def __init__(self, coordinator, thermostat) -> None:
         super().__init__(coordinator, thermostat, "climate")
+        self._attr_name = climate_name(thermostat.name)
         self._fahrenheit = thermostat.temperature_scale == "F"
         self._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT if self._fahrenheit else UnitOfTemperature.CELSIUS
         self._attr_target_temperature_step = PRECISION_WHOLE if self._fahrenheit else PRECISION_HALVES
