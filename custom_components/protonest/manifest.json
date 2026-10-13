@@ -1,0 +1,18 @@
+{
+  "domain": "protonest",
+  "name": "ProtoNest",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/yesterdayforgotten/ha-protonest",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "loggers": [
+    "custom_components.protonest"
+  ],
+  "requirements": [
+    "protobuf>=6.31.1",
+    "googleapis-common-protos>=1.60.0"
+  ],
+  "version": "0.1.0"
+}

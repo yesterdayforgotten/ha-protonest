@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Only collect our tests; generated code includes a "test_pb2.py" (nest/trait/test.proto).
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

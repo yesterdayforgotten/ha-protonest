@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+
+package nest.trait.humanlibrary;
+
+message HumanViewTrait {
+  message FaceInfo {
+    google.protobuf.StringValue faceName = 3;
+  }
+
+  message FamiliarFace {
+    string faceId = 1;
+    FaceInfo faceInfo = 2;
+  }
+
+  repeated FamiliarFace familiarFaces = 1;
+}

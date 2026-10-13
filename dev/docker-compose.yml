@@ -1,0 +1,16 @@
+# Development Home Assistant for ProtoNest. Separate from production.
+#   docker compose -f dev/docker-compose.yml up -d
+#   UI: http://localhost:8123
+name: protonest-dev
+
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: protonest-ha
+    ports:
+      - "8123:8123"
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ../config:/config
+      - ../custom_components/protonest:/config/custom_components/protonest:ro

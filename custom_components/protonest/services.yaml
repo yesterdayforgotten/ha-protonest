@@ -1,0 +1,114 @@
+run_fan:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    duration:
+      required: true
+      example: "00:45:00"
+      selector:
+        duration:
+
+average_sensors:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    sensors:
+      required: true
+      selector:
+        entity:
+          integration: protonest
+          domain: sensor
+          device_class: temperature
+          multiple: true
+
+pair_sensor:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    sensor:
+      required: true
+      selector:
+        entity:
+          integration: protonest
+          domain: sensor
+          device_class: temperature
+
+unpair_sensor:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    sensor:
+      required: true
+      selector:
+        entity:
+          integration: protonest
+          domain: sensor
+          device_class: temperature
+
+schedule_add:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    schedule: &schedule
+      required: true
+      selector:
+        select:
+          options: [heat, cool, range]
+    day: &day
+      required: true
+      selector:
+        select:
+          options: [mon, tue, wed, thu, fri, sat, sun]
+    time: &time
+      required: true
+      example: "07:30"
+      selector:
+        time:
+    temperature: &temperature
+      selector:
+        number:
+          min: 10
+          max: 90
+          step: 0.5
+    target_temp_low: *temperature
+    target_temp_high: *temperature
+
+schedule_update:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    schedule: *schedule
+    day: *day
+    time: *time
+    new_day:
+      selector:
+        select:
+          options: [mon, tue, wed, thu, fri, sat, sun]
+    new_time:
+      selector:
+        time:
+    temperature: *temperature
+    target_temp_low: *temperature
+    target_temp_high: *temperature
+
+schedule_remove:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    schedule: *schedule
+    day: *day
+    time: *time

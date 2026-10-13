@@ -1,0 +1,7 @@
+# Test image for the Home Assistant layer (HA needs Python 3.14; the host has 3.11).
+#   docker build -f dev/Dockerfile.test -t protonest-test dev
+#   docker run --rm -v "$PWD":/work -w /work protonest-test pytest tests_ha
+FROM python:3.14-slim
+RUN pip install --no-cache-dir pytest-homeassistant-custom-component
+# The integration's requirements (manifest.json), at the versions HA 2026.9.4 ships.
+RUN pip install --no-cache-dir protobuf==6.32.0 googleapis-common-protos==1.75.0

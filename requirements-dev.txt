@@ -1,0 +1,12 @@
+# protobuf pinned to what Home Assistant 2026.9.4 bundles; generated code must
+# target a gencode version <= this runtime.
+protobuf==6.32.0
+# Bundles a pinned protoc for scripts/gen_protos.py (system protoc is 3.21, too old).
+grpcio-tools==1.80.0  # libprotoc 31.1 -> gencode 6.31.1
+aiohttp
+pytest
+pytest-asyncio
+# Matches Home Assistant 2026.9.4; provides google.rpc.status_pb2 (we don't generate it).
+googleapis-common-protos==1.75.0
+# .pyi stubs for generated code (IDE/type checking only).
+mypy-protobuf==3.7.0  # 5.x is built with gencode 6.32.1 > our 6.32.0 runtime

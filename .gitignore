@@ -1,0 +1,35 @@
+# --- Secrets & PII: never commit ---
+# Reverse-engineering artifacts: HAR holds OAuth tokens, JWTs, session cookies;
+# dumps hold device serials, fabric_id, structure/user IDs, email.
+old/
+*.har
+*.bin
+*.b64
+nest_proto_*
+secrets.yaml
+
+# HA dev container config (holds credentials once the integration is set up)
+config/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Editors
+*~
+*.swp
+.vscode/
+
+# Dev-tool credentials (Google session cookies) and the paste file used to create them
+.credentials.json
+.credentials.json.lock
+capture.txt
+
+# Live Observe recordings (home state)
+captures/
+
+# Dev HA long-lived access token (for comparing entity states)
+.ha_token

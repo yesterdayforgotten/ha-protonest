@@ -1,0 +1,151 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect your Nest account",
+        "description": "In a Firefox private window, sign in at home.nest.com with the Network tab open, filter for 'issueToken', right-click the 'iframerpc' request and choose Copy Value > Copy as cURL. Paste it below, then close the window without signing out. Use a separate sign-in from any other tool using these credentials.\n\n{problem}",
+        "data": {
+          "capture": "Copied iframerpc request (cURL), or the issue token URL and cookies on two lines"
+        }
+      }
+    },
+    "error": {
+      "bad_capture": "That doesn't look like the iframerpc request.",
+      "rejected": "Google rejected these credentials. Capture them again in a new Firefox private window.",
+      "cannot_connect": "Couldn't reach Google or Nest. Try again shortly."
+    },
+    "abort": {
+      "already_configured": "This Nest account is already set up.",
+      "reauth_successful": "Credentials updated.",
+      "wrong_account": "Those credentials belong to a different Nest account."
+    }
+  },
+  "services": {
+    "run_fan": {
+      "name": "Run fan",
+      "description": "Run the HVAC fan now for a set time.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "How long (up to 1 week)."
+        }
+      }
+    },
+    "average_sensors": {
+      "name": "Average sensors",
+      "description": "Control to the average of two or more paired sensors.",
+      "fields": {
+        "sensors": {
+          "name": "Sensors",
+          "description": "Temperature sensors paired with this thermostat."
+        }
+      }
+    },
+    "pair_sensor": {
+      "name": "Pair sensor",
+      "description": "Pair a remote temperature sensor with this thermostat.",
+      "fields": {
+        "sensor": {
+          "name": "Sensor",
+          "description": "The sensor's temperature entity."
+        }
+      }
+    },
+    "unpair_sensor": {
+      "name": "Unpair sensor",
+      "description": "Unpair a sensor (not while it is in use).",
+      "fields": {
+        "sensor": {
+          "name": "Sensor",
+          "description": "The sensor's temperature entity."
+        }
+      }
+    },
+    "schedule_add": {
+      "name": "Add schedule entry",
+      "description": "Add an entry to the weekly schedule. Temperatures are in the thermostat's display units.",
+      "fields": {
+        "schedule": {
+          "name": "Schedule",
+          "description": "heat, cool or range."
+        },
+        "day": {
+          "name": "Day",
+          "description": "Day of the week."
+        },
+        "time": {
+          "name": "Time",
+          "description": "On a quarter hour."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "For heat or cool schedules."
+        },
+        "target_temp_low": {
+          "name": "Heat to",
+          "description": "For range schedules."
+        },
+        "target_temp_high": {
+          "name": "Cool to",
+          "description": "For range schedules."
+        }
+      }
+    },
+    "schedule_update": {
+      "name": "Change schedule entry",
+      "description": "Change an entry's time and/or temperature.",
+      "fields": {
+        "schedule": {
+          "name": "Schedule",
+          "description": "heat, cool or range."
+        },
+        "day": {
+          "name": "Day",
+          "description": "The entry's current day."
+        },
+        "time": {
+          "name": "Time",
+          "description": "The entry's current time."
+        },
+        "new_day": {
+          "name": "New day",
+          "description": "Move it to this day."
+        },
+        "new_time": {
+          "name": "New time",
+          "description": "Move it to this time."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "New temperature (heat or cool)."
+        },
+        "target_temp_low": {
+          "name": "Heat to",
+          "description": "New heat temperature (range)."
+        },
+        "target_temp_high": {
+          "name": "Cool to",
+          "description": "New cool temperature (range)."
+        }
+      }
+    },
+    "schedule_remove": {
+      "name": "Remove schedule entry",
+      "description": "Delete an entry from the weekly schedule.",
+      "fields": {
+        "schedule": {
+          "name": "Schedule",
+          "description": "heat, cool or range."
+        },
+        "day": {
+          "name": "Day",
+          "description": "Day of the week."
+        },
+        "time": {
+          "name": "Time",
+          "description": "The entry's time."
+        }
+      }
+    }
+  }
+}
