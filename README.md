@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="custom_components/protonest/brand/dark_logo@2x.png">
+    <img alt="ProtoNest" src="custom_components/protonest/brand/logo@2x.png" width="260">
+  </picture>
+</p>
+
 # ProtoNest
 
 A Home Assistant integration for Nest Learning Thermostats and Nest Temperature
