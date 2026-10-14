@@ -22,6 +22,8 @@ const SENSOR_COLORS = ["#8e24aa", "#00897b", "#e53935", "#3949ab", "#f4511e", "#
 const THERMOSTAT_COLOR = "#78909c";
 const DAY_SETS = { all: DAYS, weekdays: DAYS.slice(0, 5), weekend: DAYS.slice(5) }; // "Copy to…" shortcuts
 const DAY_SET_NAMES = { all: "All", weekdays: "Weekdays", weekend: "Weekend" };
+const DAY_FULL = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+const DRAG_PX = 6; // how far a press moves before it's a drag rather than a tap
 
 const minutes = (hhmm) => {
   const [h, m] = hhmm.split(":").map(Number);
@@ -42,9 +44,14 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._pinned = null; // the temperature schedule being edited, fixed while a day is open
     this._rows = null; // that day's editable rows, temperature and sensor
     this._copyTo = null; // days ticked for "copy to"
+    this._expanded = null; // the sensor row whose sensor picker is open
+    this._focus = null; // {kind, time}: the entry tapped on a bar, to highlight in the editor
     this._busy = false;
     this._error = null;
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    if (!this.shadowRoot) {
+      this.attachShadow({ mode: "open" });
+      this.shadowRoot.addEventListener("keydown", (ev) => this._key(ev));
+    }
     this._render();
   }
 
@@ -60,6 +67,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       return;
     }
     this._shown = key;
+    this._moved = null; // the schedule changed: show what's stored
     // Don't throw away edits the user hasn't saved yet.
     if (this._rows && this._rows.some((r) => r.dirty)) return;
     this._rows = null;
@@ -91,6 +99,10 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   getGridOptions() {
     return { columns: 12, min_columns: 6, rows: "auto" };
+  }
+
+  static getConfigElement() {
+    return document.createElement("protonest-schedule-card-editor");
   }
 
   static getStubConfig(hass) {
@@ -142,9 +154,12 @@ class ProtoNestScheduleCard extends HTMLElement {
   }
 
   _entries(kind, day) {
-    const list = kind === SENSORS
+    let list = kind === SENSORS
       ? (this._sensorSchedule && this._sensorSchedule.entries) || []
       : (this._schedule && this._schedule[kind]) || [];
+    // A dropped entry shows at its new time while the save goes through.
+    const mv = this._moved;
+    if (mv && mv.kind === kind) list = list.map((e) => (e.day === mv.day && e.time === mv.from ? { ...e, time: mv.to } : e));
     return list.filter((e) => !day || e.day === day).sort(byTime);
   }
 
@@ -173,6 +188,21 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _sensorsLabel(ids) {
     return ids.length > 1 ? `Avg: ${ids.map((i) => this._option(i).name).join(" + ")}` : this._option(ids[0]).name;
+  }
+
+  // A time of day the way Home Assistant is set to show times (12 or 24 hour).
+  _fmtTime(mins) {
+    const loc = (this._hass && this._hass.locale) || {};
+    const opts = { hour: "numeric", minute: "2-digit" };
+    // hourCycle, not hour12: with hour12 false, some locales show midnight as 24:00.
+    if (loc.time_format === "12") opts.hourCycle = "h12";
+    else if (loc.time_format === "24") opts.hourCycle = "h23";
+    try {
+      const lang = loc.time_format === "system" ? undefined : loc.language;
+      return new Date(2000, 0, 1, Math.floor(mins / 60), mins % 60).toLocaleTimeString(lang, opts);
+    } catch (err) {
+      return hhmm(mins);
+    }
   }
 
   _reading(entityId) {
@@ -222,6 +252,33 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._render();
   }
 
+  // Esc closes "Copy to", then the day; Enter saves the row being edited.
+  _key(ev) {
+    if (this._busy) return;
+    if (ev.key === "Escape" && (this._copyTo || this._open)) {
+      ev.preventDefault();
+      if (this._copyTo) {
+        this._copyTo = null;
+        this._render();
+      } else this._openDay(this._open);
+    } else if (ev.key === "Enter" && ev.target && ev.target.dataset && ev.target.dataset.field) {
+      const i = Number(ev.target.dataset.i);
+      if (this._rows && this._rows[i] && this._rows[i].dirty) {
+        ev.preventDefault();
+        this._saveRow(i);
+      }
+    }
+  }
+
+  // Tapping an entry on a bar opens its day with that entry highlighted.
+  _openEntry(day, kind, time) {
+    if (this._busy) return;
+    if (this._open !== day) this._openDay(day);
+    this._focus = { kind, time };
+    this._scroll = true;
+    this._render();
+  }
+
   _toggleSchedule() {
     const ss = this._sensorSchedule;
     if (!ss || !ss.switch) return;
@@ -254,7 +311,9 @@ class ProtoNestScheduleCard extends HTMLElement {
         ? { target_temp_low: guess("target_temp_low") ?? (this._fahrenheit ? 68 : 20), target_temp_high: guess("target_temp_high") ?? (this._fahrenheit ? 76 : 24.5) }
         : { temperature: guess("temperature") ?? (this._fahrenheit ? 70 : 21) };
     }
-    this._rows.push({ kind, orig: null, time, ...values, dirty: true });
+    const row = { kind, orig: null, time, ...values, dirty: true };
+    this._rows.push(row);
+    if (kind === SENSORS) this._expanded = row;
     this._render();
   }
 
@@ -267,6 +326,12 @@ class ProtoNestScheduleCard extends HTMLElement {
     else picked = [...picked, id];
     row.sensors = picked;
     row.dirty = true;
+    this._render();
+  }
+
+  _expand(i) {
+    const row = this._rows[i];
+    this._expanded = this._expanded === row ? null : row;
     this._render();
   }
 
@@ -371,6 +436,100 @@ class ProtoNestScheduleCard extends HTMLElement {
     });
   }
 
+  // --- dragging ---------------------------------------------------------------------
+  // A temperature chip, or the handle at the start of a sensor band, drags along its
+  // day in quarter hours, between its neighbours; dropping it saves the new time.
+  // A press that doesn't move is a tap, which opens the entry.
+
+  _dragStart(ev, el) {
+    if (this._busy || ev.button > 0 || this._drag) return;
+    if (this._rows && this._rows.some((r) => r.dirty)) {
+      this._error = `Save or discard the changes to ${DAY_FULL[this._open]} first.`;
+      this._render();
+      return;
+    }
+    const { day, kind, time } = el.dataset;
+    this._error = null;
+    const at = minutes(time);
+    const others = this._entries(kind, day).map((e) => minutes(e.time)).filter((m) => m !== at);
+    this._drag = {
+      el, day, kind, time, at, to: at, id: ev.pointerId, x: ev.clientX, moved: false,
+      track: el.closest(".bars"),
+      lo: Math.max(0, ...others.filter((m) => m < at).map((m) => m + STEP_MINUTES)),
+      hi: Math.min(24 * 60 - STEP_MINUTES, ...others.filter((m) => m > at).map((m) => m - STEP_MINUTES)),
+    };
+    if (el.setPointerCapture) el.setPointerCapture(ev.pointerId);
+  }
+
+  _dragMove(ev) {
+    const d = this._drag;
+    if (!d || ev.pointerId !== d.id) return;
+    if (!d.moved && Math.abs(ev.clientX - d.x) < DRAG_PX) return;
+    if (!d.moved) {
+      d.moved = true;
+      d.el.classList.add("dragging");
+      d.tip = document.createElement("span");
+      d.tip.className = "tip";
+      d.track.appendChild(d.tip);
+    }
+    ev.preventDefault();
+    const rect = d.track.getBoundingClientRect();
+    const raw = ((ev.clientX - rect.left) / rect.width) * 24 * 60;
+    d.to = Math.min(d.hi, Math.max(d.lo, Math.round(raw / STEP_MINUTES) * STEP_MINUTES));
+    this._dragShow(d);
+  }
+
+  _dragShow(d) {
+    const pct = (m) => `${(m / (24 * 60)) * 100}%`;
+    d.el.style.left = pct(d.to);
+    d.tip.style.left = pct(d.to);
+    d.tip.textContent = this._fmtTime(d.to);
+    if (d.kind !== SENSORS) return;
+    // Resize the band that starts here and the one before it.
+    const band = d.track.querySelector(`.band[data-day="${d.day}"][data-time="${d.time}"]`);
+    if (!band) return;
+    band.style.left = pct(d.to);
+    band.style.width = pct(Number(band.dataset.end) - d.to);
+    const prev = band.previousElementSibling;
+    if (prev && prev.classList.contains("band")) prev.style.width = pct(d.to - Number(prev.dataset.start));
+  }
+
+  _dragEnd(ev, cancelled = false) {
+    const d = this._drag;
+    if (!d || ev.pointerId !== d.id) return;
+    this._drag = null;
+    if (!d.moved) return; // a tap: the click opens the entry
+    this._dragged = true; // swallow the click that follows the drop
+    setTimeout(() => (this._dragged = false), 0);
+    if (cancelled || d.to === d.at) {
+      this._render();
+      return;
+    }
+    const time = hhmm(d.to);
+    const save = d.kind === SENSORS
+      ? () => this._setSensorEntries(this._entries(SENSORS).map((e) => (e.day === d.day && e.time === d.time ? { ...e, time } : e)))
+      : ((entry) => () => this._call(d.kind, "schedule_update", { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) }))(
+          this._entries(d.kind, d.day).find((e) => e.time === d.time));
+    const moved = { kind: d.kind, day: d.day, from: d.time, to: time };
+    this._moved = moved;
+    clearTimeout(this._movedTimer);
+    this._movedTimer = setTimeout(() => {
+      // Never confirmed: go back to what's stored.
+      if (this._moved !== moved) return;
+      this._moved = null;
+      this._render();
+    }, 20 * 1000);
+    this._run(async () => {
+      try {
+        await save();
+      } catch (err) {
+        this._moved = null;
+        throw err;
+      }
+      this._settled();
+    });
+  }
+
   // --- rendering --------------------------------------------------------------------
 
   _chip(entry, kind) {
@@ -381,7 +540,7 @@ class ProtoNestScheduleCard extends HTMLElement {
         ? [`${this._fmt(entry.target_temp_low)}–${this._fmt(entry.target_temp_high)}`,
            `<b class="lo">${esc(this._fmt(entry.target_temp_low))}</b><b class="hi">${esc(this._fmt(entry.target_temp_high))}</b>`]
         : [this._fmt(entry.temperature), esc(this._fmt(entry.temperature))];
-    return `<span class="chip ${kind} ${edge}" style="left:${pct}%" title="${esc(entry.time)} · ${esc(label)}${esc(this._unit)}">${inner}</span>`;
+    return `<span class="chip ${kind} ${edge}" style="left:${pct}%" data-act="entry" data-drag data-day="${entry.day}" data-kind="${kind}" data-time="${esc(entry.time)}" title="${esc(this._fmtTime(minutes(entry.time)))} · ${esc(label)}${esc(this._unit)}">${inner}</span>`;
   }
 
   _fill(ids) {
@@ -407,9 +566,14 @@ class ProtoNestScheduleCard extends HTMLElement {
         const end = i + 1 < starts.length ? starts[i + 1].at : 24 * 60;
         const label = this._sensorsLabel(s.e.sensors);
         const [left, width] = [(s.at / (24 * 60)) * 100, ((end - s.at) / (24 * 60)) * 100];
-        return `<span class="band" style="left:${left}%;width:${width}%;background:${this._fill(s.e.sensors)}" title="${esc(s.e.time)} · ${esc(label)}"><span>${esc(label)}</span></span>`;
+        return `<span class="band" style="left:${left}%;width:${width}%;background:${this._fill(s.e.sensors)}" data-act="entry" data-day="${s.e.day}" data-kind="${SENSORS}" data-time="${esc(s.e.time)}" data-start="${s.at}" data-end="${end}" title="${esc(this._fmtTime(minutes(s.e.time)))} · ${esc(label)}"><span>${esc(label)}</span></span>`;
       })
-      .join("");
+      .join("") +
+      // A handle at the start of each of this day's entries, to drag its time.
+      starts
+        .filter((s) => s.e.day === day)
+        .map((s) => `<span class="handle" style="left:${(s.at / (24 * 60)) * 100}%" data-act="entry" data-drag data-day="${day}" data-kind="${SENSORS}" data-time="${esc(s.e.time)}" title="Drag to change the time"></span>`)
+        .join("");
   }
 
   _sensorHeader() {
@@ -435,6 +599,14 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _editor() {
     this._ensureRows();
+    if (this._focus) {
+      const { kind, time } = this._focus;
+      this._rows.forEach((r) => {
+        r.focus = r.kind === kind && r.orig === time;
+        if (r.focus && kind === SENSORS) this._expanded = r;
+      });
+      this._focus = null;
+    }
     const tempKind = this._tempKind;
     const step = this._fahrenheit ? 1 : 0.5;
     const [lo, hi] = this._fahrenheit ? [50, 90] : [10, 32];
@@ -445,47 +617,65 @@ class ProtoNestScheduleCard extends HTMLElement {
       `<span class="picks">${this._options
         .map((o) => `<button class="pick ${r.sensors.includes(o.id) ? "on" : ""}" style="--c:${o.color}" data-act="pick" data-i="${i}" data-id="${esc(o.id)}" ${dis}>${esc(o.name)}</button>`)
         .join("")}</span>`;
+    // Times are picked from the quarter hours the thermostat takes, shown in HA's time format.
+    const timeSelect = (i, r) => {
+      const at = /^\d{1,2}:\d{2}/.test(r.time || "") ? minutes(r.time) : null;
+      const opts = [];
+      for (let m = 0; m < 24 * 60; m += STEP_MINUTES) opts.push(m);
+      if (at !== null && !opts.includes(at)) opts.push(at), opts.sort((a, b) => a - b);
+      return `<select class="time" data-i="${i}" data-field="time" ${dis}>${opts
+        .map((m) => `<option value="${hhmm(m)}" ${m === at ? "selected" : ""}>${esc(this._fmtTime(m))}</option>`)
+        .join("")}</select>`;
+    };
+    // A sensor row shows what it picks; tapping that opens the picker below it.
+    const summary = (i, r) => `
+      <button class="summary" data-act="expand" data-i="${i}" aria-expanded="${this._expanded === r}" ${dis}>
+        <i style="background:${this._fill(r.sensors)}"></i><span>${esc(this._sensorsLabel(r.sensors))}</span><b>${this._expanded === r ? "▴" : "▾"}</b>
+      </button>`;
     const row = (r, i) => `
-      <div class="entry ${r.dirty ? "dirty" : ""} ${r.kind === SENSORS ? "sensors" : ""}">
-        <input class="time" type="time" step="${STEP_MINUTES * 60}" value="${esc(r.time)}" data-i="${i}" data-field="time" ${dis}>
+      <div class="entry ${r.dirty ? "dirty" : ""} ${r.focus ? "focus" : ""}">
+        ${timeSelect(i, r)}
         ${r.kind === SENSORS
-          ? picks(i, r)
+          ? summary(i, r)
           : `<span class="temps">${r.kind === "range" ? `${num(i, "target_temp_low", r.target_temp_low)}<span class="dash">–</span>${num(i, "target_temp_high", r.target_temp_high)}` : num(i, "temperature", r.temperature)}<span class="unit">${esc(this._unit)}</span></span>`}
-        <button class="icon save" data-act="save" data-i="${i}" title="Save" ${r.dirty ? "" : "hidden"} ${dis}>✓</button>
-        <button class="icon delete" data-act="delete" data-i="${i}" title="Delete" ${dis}>✕</button>
-      </div>`;
-    const section = (kind, title, empty, hint = "") => {
+        <span class="row-actions">
+          <button class="icon save" data-act="save" data-i="${i}" title="Save" ${dis}>✓</button>
+          <button class="icon delete" data-act="delete" data-i="${i}" title="Delete" ${dis}>✕</button>
+        </span>
+      </div>
+      ${r.kind === SENSORS && this._expanded === r
+        ? `<div class="picker">${picks(i, r)}<div class="hint">One sensor, or two or more to average. The thermostat's own sensor can't be averaged.</div></div>`
+        : ""}`;
+    const section = (kind, title, empty) => {
       const rows = this._rows.map((r, i) => (r.kind === kind ? row(r, i) : "")).join("");
       return `
         <div class="section">
           <div class="section-head"><span>${esc(title)}</span><button class="text" data-act="add" data-kind="${kind}" ${dis}>+ Add</button></div>
           ${rows || `<div class="empty">${esc(empty)}</div>`}
-          ${rows && hint ? `<div class="hint">${esc(hint)}</div>` : ""}
         </div>`;
     };
     const what = this._hasSensors ? `${KINDS[tempKind].toLowerCase()} and sensor schedules` : `${KINDS[tempKind].toLowerCase()} schedule`;
+    const n = this._copyTo ? this._copyTo.size : 0;
     const copy = this._copyTo
       ? `<div class="copy">
           <span>Copy ${DAY_NAMES[this._open]} to</span>
-          ${Object.keys(DAY_SETS)
-            .map((k) => `<button class="pill set" data-act="copy-set" data-set="${k}" ${dis}>${DAY_SET_NAMES[k]}</button>`)
-            .join("")}
-          <span class="break"></span>
           ${DAYS.filter((d) => d !== this._open)
             .map((d) => `<button class="pill ${this._copyTo.has(d) ? "on" : ""}" data-act="copy-day" data-day="${d}" ${dis}>${DAY_NAMES[d]}</button>`)
             .join("")}
-          <button class="text" data-act="copy-go" ${dis || this._copyTo.size ? "" : "disabled"} ${dis}>Copy</button>
-          <div class="hint">Replaces those days' ${esc(what)}.</div>
+          <select class="sets" aria-label="Select days" ${dis}>
+            <option value="" selected>Select…</option>
+            ${Object.keys(DAY_SETS).map((k) => `<option value="${k}">${DAY_SET_NAMES[k]}</option>`).join("")}
+          </select>
+          <button class="text go" data-act="copy-go" title="Replaces those days' ${esc(what)}." ${n ? "" : "disabled"} ${dis}>${n ? `Replace ${n} day${n === 1 ? "" : "s"}` : "Copy"}</button>
         </div>`
       : "";
     return `
       <div class="editor">
+        <div class="editor-head"><span>${DAY_FULL[this._open]}</span><button class="icon" data-act="close" title="Close" ${dis}>✕</button></div>
         ${section(tempKind, `${KINDS[tempKind]} temperatures`, `No ${KINDS[tempKind].toLowerCase()} entries on ${DAY_NAMES[this._open]}.`)}
-        ${this._hasSensors ? section(SENSORS, "Sensors", `No sensor entries on ${DAY_NAMES[this._open]}.`, "Pick two or more sensors to average them.") : ""}
+        ${this._hasSensors ? section(SENSORS, "Sensors", `No sensor entries on ${DAY_NAMES[this._open]}.`) : ""}
         <div class="actions">
-          <button class="text" data-act="copy" ${dis || this._rows.length ? "" : "disabled"} ${dis}>Copy to…</button>
-          <span class="spacer"></span>
-          <button class="text" data-act="close" ${dis}>Done</button>
+          <button class="text" data-act="copy" ${dis || this._rows.length ? "" : "disabled"} ${dis}>${this._copyTo ? "Cancel copy" : "Copy to other days…"}</button>
         </div>
         ${copy}
       </div>`;
@@ -493,6 +683,7 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot || !this._config) return;
+    if (this._drag && this._drag.moved) return; // redrawn on the drop
     const s = this._state;
     const title = this._config.title || (s && s.attributes.friendly_name) || this._config.entity;
     let body;
@@ -539,6 +730,8 @@ class ProtoNestScheduleCard extends HTMLElement {
           if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
           ev.preventDefault();
           this._openDay(el.dataset.day);
+        } else if (act === "entry") {
+          if (!this._dragged) this._openEntry(el.dataset.day, el.dataset.kind, el.dataset.time);
         } else if (act === "kind") {
           if (this._busy) return;
           this._kind = el.dataset.kind;
@@ -549,6 +742,7 @@ class ProtoNestScheduleCard extends HTMLElement {
         } else if (act === "add") this._addRow(el.dataset.kind);
         else if (act === "save") this._saveRow(Number(el.dataset.i));
         else if (act === "delete") this._deleteRow(Number(el.dataset.i));
+        else if (act === "expand") this._expand(Number(el.dataset.i));
         else if (act === "pick") this._pick(Number(el.dataset.i), el.dataset.id);
         else if (act === "toggle-schedule") this._toggleSchedule();
         else if (act === "close") this._openDay(this._open);
@@ -559,15 +753,22 @@ class ProtoNestScheduleCard extends HTMLElement {
           const d = el.dataset.day;
           this._copyTo.has(d) ? this._copyTo.delete(d) : this._copyTo.add(d);
           this._render();
-        } else if (act === "copy-set") this._copySet(el.dataset.set);
-        else if (act === "copy-go") this._copy();
+        } else if (act === "copy-go") this._copy();
         ev.stopPropagation();
       };
       el.addEventListener("click", handler);
       if (act === "day") el.addEventListener("keydown", handler);
     });
-    root.querySelectorAll("input[data-field]").forEach((input) => {
-      input.addEventListener("input", () => {
+    root.querySelectorAll("[data-drag]").forEach((el) => {
+      el.addEventListener("pointerdown", (ev) => this._dragStart(ev, el));
+      el.addEventListener("pointermove", (ev) => this._dragMove(ev));
+      el.addEventListener("pointerup", (ev) => this._dragEnd(ev));
+      el.addEventListener("pointercancel", (ev) => this._dragEnd(ev, true));
+    });
+    const sets = root.querySelector("select.sets");
+    if (sets) sets.addEventListener("change", () => sets.value && this._copySet(sets.value));
+    root.querySelectorAll("[data-field]").forEach((input) => {
+      const onEdit = () => {
         const row = this._rows[Number(input.dataset.i)];
         const field = input.dataset.field;
         row[field] = field === "time" ? input.value : input.value === "" ? null : Number(input.value);
@@ -575,10 +776,16 @@ class ProtoNestScheduleCard extends HTMLElement {
           row.dirty = true;
           const entry = input.closest(".entry");
           entry.classList.add("dirty");
-          entry.querySelector(".save").hidden = false;
         }
-      });
+      };
+      input.addEventListener("input", onEdit);
+      input.addEventListener("change", onEdit);
     });
+    if (this._scroll) {
+      this._scroll = false;
+      const focused = root.querySelector(".entry.focus");
+      if (focused && focused.scrollIntoView) focused.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
   }
 }
 
@@ -625,21 +832,46 @@ const STYLE = `
   .key { display: inline-flex; align-items: center; gap: 4px; }
   .key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
   .key .reading, .key.avg { color: var(--secondary-text-color); }
-  .editor { margin: 4px 0 10px 38px; padding: 8px 10px; border-radius: 8px; background: var(--secondary-background-color); }
+  .editor { margin: 4px 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--secondary-background-color); }
   .section + .section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider-color); }
   .section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.85em; font-weight: 500;
                   color: var(--secondary-text-color); }
-  .entry { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-  .entry.sensors { align-items: flex-start; }
+  .entry { display: flex; align-items: center; gap: 8px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; }
+  .entry.focus { background: var(--card-background-color, #fff); box-shadow: inset 3px 0 0 var(--primary-color); }
+  .row-actions { margin-left: auto; display: flex; flex: none; }
+  .entry:not(.dirty) .save { visibility: hidden; }
+  .chip, .band { cursor: pointer; }
+  .chip { touch-action: none; cursor: grab; }
+  .chip.dragging { z-index: 4; cursor: grabbing; transform: translateX(-50%); box-shadow: 0 0 0 2px var(--primary-color); }
+  .handle { position: absolute; top: -2px; bottom: -2px; width: 14px; transform: translateX(-50%); z-index: 3;
+            cursor: ew-resize; touch-action: none; }
+  .handle::after { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 4px; border-radius: 2px;
+                   background: var(--card-background-color, #fff); box-shadow: 0 0 0 1px var(--divider-color); opacity: 0; transition: opacity 0.1s; }
+  .bars:hover .handle::after, .handle.dragging::after { opacity: 1; }
+  .tip { position: absolute; bottom: 100%; transform: translateX(-50%); margin-bottom: 2px; z-index: 5; white-space: nowrap;
+         padding: 1px 6px; border-radius: 4px; font-size: 0.75em; background: var(--primary-text-color); color: var(--card-background-color, #fff); }
+  .editor-head { display: flex; align-items: center; justify-content: space-between; font-weight: 500;
+                 color: var(--primary-text-color); margin: -2px -4px 4px 0; }
+  .summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
+             border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 8px;
+             background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+  .summary i { flex: none; width: 12px; height: 12px; border-radius: 3px; }
+  .summary span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary b { font-weight: normal; color: var(--secondary-text-color); }
+  .entry.dirty .summary { border-color: var(--primary-color); }
+  .picker { padding: 2px 0 8px; }
+  .picker .hint { margin-top: 4px; }
   .entry.dirty .time, .entry.dirty .temp { border-color: var(--primary-color); }
   input { font: inherit; color: var(--primary-text-color); background: var(--card-background-color, #fff);
           border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 6px; }
   input:disabled { opacity: 0.6; }
-  .time { width: 7.2em; flex: none; } .temp { width: 4em; }
+  select { font: inherit; color: var(--primary-text-color); background: var(--card-background-color, #fff);
+           border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 2px; }
+  .time { width: 6.6em; flex: none; } .temp { width: 4em; }
   .temps { display: flex; align-items: center; gap: 4px; }
-  .picks { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+  .picks { display: flex; flex-wrap: wrap; gap: 6px; }
   .pick { border: 1px solid var(--c); background: none; color: var(--primary-text-color); border-radius: 12px;
-          padding: 2px 8px; font-size: 0.85em; }
+          padding: 4px 10px; font-size: 0.85em; }
   .pick.on { background: var(--c); color: #fff; }
   .unit, .dash { color: var(--secondary-text-color); font-size: 0.85em; }
   button { font: inherit; cursor: pointer; }
@@ -648,21 +880,62 @@ const STYLE = `
   .icon.save { color: var(--primary-color); font-weight: 700; }
   .icon.delete:hover { color: var(--error-color, #db4437); }
   .actions { display: flex; gap: 8px; margin-top: 8px; }
-  .spacer { flex: 1; }
   .text { border: none; background: none; color: var(--primary-color); padding: 4px 6px; font-weight: 500; }
   .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 0.9em;
           color: var(--secondary-text-color); }
   .pill { border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); border-radius: 12px; padding: 2px 8px; }
   .pill.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
-  .pill.set { border-style: dashed; }
-  .break { flex-basis: 100%; height: 0; }
+  .copy .go { margin-left: auto; }
   .hint { flex-basis: 100%; font-size: 0.85em; color: var(--secondary-text-color); }
   .empty { color: var(--secondary-text-color); font-size: 0.9em; padding: 4px 0; }
   .error { margin-top: 8px; color: var(--error-color, #db4437); font-size: 0.9em; }
   .warn { color: var(--warning-color, #ffa600); }
 `;
 
+// The card's visual editor, in the dashboard's "Edit card" dialog.
+const EDITOR_SCHEMA = [
+  { name: "entity", required: true, selector: { entity: { domain: "climate", integration: "protonest" } } },
+  { name: "schedule", selector: { select: { mode: "dropdown", options: [
+    { value: "auto", label: "Follow the thermostat's mode" },
+    ...Object.entries(KINDS).map(([value, label]) => ({ value, label })),
+  ] } } },
+  { name: "title", selector: { text: {} } },
+];
+const EDITOR_LABELS = { entity: "Thermostat", schedule: "Temperature schedule shown", title: "Title (optional)" };
+
+class ProtoNestScheduleCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _render() {
+    if (!this._config || !this._hass) return;
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (schema) => EDITOR_LABELS[schema.name];
+      this._form.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        const config = { ...ev.detail.value };
+        if (config.schedule === "auto") delete config.schedule;
+        if (!config.title) delete config.title;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = EDITOR_SCHEMA;
+    this._form.data = { schedule: "auto", ...this._config };
+  }
+}
+
 customElements.define("protonest-schedule-card", ProtoNestScheduleCard);
+customElements.define("protonest-schedule-card-editor", ProtoNestScheduleCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "protonest-schedule-card",

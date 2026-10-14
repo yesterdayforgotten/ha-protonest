@@ -78,7 +78,8 @@ Thermostats and temperature sensors get Nest-style icons (`protonest:thermostat`
 
 ProtoNest includes a card for viewing and editing a thermostat's weekly schedules,
 like the Nest app. Each day shows the temperature schedule and, below it, the
-target sensor schedule. Add it from the card picker ("ProtoNest schedule") or in YAML:
+target sensor schedule. Add it from the card picker ("ProtoNest schedule"), where
+you choose the thermostat in the card editor, or in YAML:
 
 ```yaml
 type: custom:protonest-schedule-card
@@ -86,10 +87,12 @@ entity: climate.living_room_thermostat
 # schedule: heat   # optional: heat, cool or range; default follows the thermostat's mode
 ```
 
-Tap a day to change its temperatures and sensors, delete or add entries, or copy
-the whole day to others (All, Weekdays, Weekend or chosen days). Temperature
-changes save straight to the thermostat. After updating ProtoNest,
-refresh the browser (Ctrl+Shift+R) so it loads the new card.
+Click a day to change its temperatures and sensors, delete or add entries, or copy
+the whole day to others (All, Weekdays, Weekend or chosen days). Click an entry
+on a bar to open it directly. Drag a temperature, or the start of a sensor band,
+to change its time in quarter hours. Enter saves the row being edited, and Esc
+closes the editor. Temperature changes save straight to the thermostat. After
+updating ProtoNest, refresh the browser (Ctrl+Shift+R) so it loads the new card.
 
 ### Target sensor schedule
 
