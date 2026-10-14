@@ -76,8 +76,9 @@ Thermostats and temperature sensors get Nest-style icons (`protonest:thermostat`
 
 ### Schedule card
 
-ProtoNest includes a card for viewing and editing a thermostat's weekly schedule,
-like the Nest app. Add it from the card picker ("ProtoNest schedule") or in YAML:
+ProtoNest includes a card for viewing and editing a thermostat's weekly schedules,
+like the Nest app. Each day shows the temperature schedule and, below it, the
+target sensor schedule. Add it from the card picker ("ProtoNest schedule") or in YAML:
 
 ```yaml
 type: custom:protonest-schedule-card
@@ -85,14 +86,15 @@ entity: climate.living_room_thermostat
 # schedule: heat   # optional: heat, cool or range; default follows the thermostat's mode
 ```
 
-Tap a day to change times and temperatures, delete or add entries, or copy that
-day to others. Changes save straight to the thermostat. After updating ProtoNest,
+Tap a day to change its temperatures and sensors, delete or add entries, or copy
+the whole day to others (All, Weekdays, Weekend or chosen days). Temperature
+changes save straight to the thermostat. After updating ProtoNest,
 refresh the browser (Ctrl+Shift+R) so it loads the new card.
 
 ### Target sensor schedule
 
-The card's **Sensors** tab is a target sensor schedule that Home Assistant runs,
-rather than the thermostat. Unlike the thermostat's own sensor schedule (four
+The lower bar on each day of the card is a target sensor schedule that Home
+Assistant runs, rather than the thermostat. Unlike the thermostat's own sensor schedule (four
 fixed periods, the same every day), it can have any number of entries per day at
 any time. Each entry means "from this time on, control to these sensors": the
 thermostat's own sensor, one temperature sensor, or two or more sensors to

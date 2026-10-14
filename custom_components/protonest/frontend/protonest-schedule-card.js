@@ -1,18 +1,21 @@
 // ProtoNest's weekly schedule card: `type: custom:protonest-schedule-card`,
-// `entity: climate.<thermostat>`, and optionally `schedule: heat | cool |
-// range | sensors` (default: the one the thermostat's current mode uses).
+// `entity: climate.<thermostat>`, and optionally `schedule: heat | cool | range`
+// (the temperature schedule shown; default: the one the current mode uses).
 //
-// Heat, cool and range are the thermostat's own schedules: read from its
-// `schedule` attribute and saved through protonest.schedule_add / _update /
-// _remove, one entry at a time, like the Nest app. Sensors is the target sensor
-// schedule Home Assistant runs (sensor_schedule.py): read from the
-// `sensor_schedule` attribute and saved whole through
-// protonest.set_sensor_schedule.
+// Each day has two bars: the thermostat's temperature schedule, and below it
+// the target sensor schedule Home Assistant runs (on thermostats with paired
+// sensors). Tapping a day edits both.
+//
+// Temperatures are read from the `schedule` attribute and saved through
+// protonest.schedule_add / _update / _remove, one entry at a time, like the
+// Nest app. Sensors are read from the `sensor_schedule` attribute and saved
+// whole through protonest.set_sensor_schedule.
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_NAMES = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
-const KINDS = { heat: "Heat", cool: "Cool", range: "Heat · Cool", sensors: "Sensors" };
+const KINDS = { heat: "Heat", cool: "Cool", range: "Heat · Cool" };
 const MODE_KIND = { heat: "heat", cool: "cool", heat_cool: "range" };
+const SENSORS = "sensors"; // the kind of a sensor schedule row
 const STEP_MINUTES = 15; // the thermostat only takes quarter hours
 const THERMOSTAT = "thermostat"; // the thermostat's own sensor, in the sensor schedule
 const SENSOR_COLORS = ["#8e24aa", "#00897b", "#e53935", "#3949ab", "#f4511e", "#7cb342", "#6d4c41", "#00acc1"];
@@ -32,12 +35,12 @@ const byTime = (a, b) => DAYS.indexOf(a.day) - DAYS.indexOf(b.day) || minutes(a.
 class ProtoNestScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config || !config.entity) throw new Error("Set `entity` to a ProtoNest thermostat (climate.…)");
-    if (config.schedule && !(config.schedule in KINDS)) throw new Error("`schedule` must be heat, cool, range or sensors");
+    if (config.schedule && !(config.schedule in KINDS)) throw new Error("`schedule` must be heat, cool or range");
     this._config = config;
     this._kind = config.schedule || null; // null: follow the thermostat's mode
     this._open = null; // the day being edited
-    this._pinned = null; // the schedule kind being edited, fixed while a day is open
-    this._rows = null; // that day's editable rows
+    this._pinned = null; // the temperature schedule being edited, fixed while a day is open
+    this._rows = null; // that day's editable rows, temperature and sensor
     this._copyTo = null; // days ticked for "copy to"
     this._busy = false;
     this._error = null;
@@ -83,7 +86,7 @@ class ProtoNestScheduleCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 7;
+    return 8;
   }
 
   getGridOptions() {
@@ -113,18 +116,21 @@ class ProtoNestScheduleCard extends HTMLElement {
     return s && s.attributes.sensor_schedule;
   }
 
-  get _activeKind() {
+  // A sensor schedule only makes sense with paired sensors to choose from.
+  get _hasSensors() {
+    const ss = this._sensorSchedule;
+    return !!(ss && ss.options && ss.options.some((o) => o.id !== THERMOSTAT));
+  }
+
+  // The temperature schedule shown: heat, cool or range.
+  get _tempKind() {
     if (this._pinned) return this._pinned;
     if (this._kind) return this._kind;
     const s = this._state;
     const fromMode = s && MODE_KIND[s.state];
     if (fromMode) return fromMode;
     const sched = this._schedule;
-    return (sched && ["heat", "cool", "range"].find((k) => sched[k] && sched[k].length)) || "heat";
-  }
-
-  get _sensors() {
-    return this._activeKind === "sensors";
+    return (sched && Object.keys(KINDS).find((k) => sched[k] && sched[k].length)) || "heat";
   }
 
   get _unit() {
@@ -135,16 +141,16 @@ class ProtoNestScheduleCard extends HTMLElement {
     return this._unit.includes("F");
   }
 
-  _entries(day) {
-    const list = this._sensors
+  _entries(kind, day) {
+    const list = kind === SENSORS
       ? (this._sensorSchedule && this._sensorSchedule.entries) || []
-      : (this._schedule && this._schedule[this._activeKind]) || [];
+      : (this._schedule && this._schedule[kind]) || [];
     return list.filter((e) => !day || e.day === day).sort(byTime);
   }
 
-  _values(entry) {
-    if (this._sensors) return { sensors: [...entry.sensors] };
-    return this._activeKind === "range"
+  _values(entry, kind) {
+    if (kind === SENSORS) return { sensors: [...entry.sensors] };
+    return kind === "range"
       ? { target_temp_low: entry.target_temp_low, target_temp_high: entry.target_temp_high }
       : { temperature: entry.temperature };
   }
@@ -207,7 +213,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       this._open = null;
       this._pinned = null;
     } else {
-      this._pinned = this._activeKind; // keep the tab shown now, whatever the mode does
+      this._pinned = this._tempKind; // keep the schedule shown now, whatever the mode does
       this._open = day;
     }
     this._rows = null;
@@ -224,28 +230,31 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _ensureRows() {
     if (this._rows || !this._open) return;
-    this._rows = this._entries(this._open).map((e) => ({ orig: e.time, time: e.time, ...this._values(e), dirty: false }));
+    const kinds = [this._tempKind, ...(this._hasSensors ? [SENSORS] : [])];
+    this._rows = kinds.flatMap((kind) =>
+      this._entries(kind, this._open).map((e) => ({ kind, orig: e.time, time: e.time, ...this._values(e, kind), dirty: false }))
+    );
   }
 
-  _addRow() {
-    const rows = this._rows;
-    const last = rows[rows.length - 1];
+  _addRow(kind) {
+    const same = this._rows.filter((r) => r.kind === kind);
+    const last = same[same.length - 1];
     const time = last ? hhmm(Math.min(minutes(last.time) + 60, 23 * 60 + 45)) : "08:00";
     let values;
     if (last) {
-      values = this._values(last);
-    } else if (this._sensors) {
+      values = this._values(last, kind);
+    } else if (kind === SENSORS) {
       const first = this._options.find((o) => o.id !== THERMOSTAT);
       values = { sensors: [first ? first.id : THERMOSTAT] };
     } else {
       const s = this._state;
       const sameUnit = this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature === this._unit;
       const guess = (a) => (sameUnit && s && s.attributes[a] != null ? s.attributes[a] : null);
-      values = this._activeKind === "range"
+      values = kind === "range"
         ? { target_temp_low: guess("target_temp_low") ?? (this._fahrenheit ? 68 : 20), target_temp_high: guess("target_temp_high") ?? (this._fahrenheit ? 76 : 24.5) }
         : { temperature: guess("temperature") ?? (this._fahrenheit ? 70 : 21) };
     }
-    rows.push({ orig: null, time, ...values, dirty: true });
+    this._rows.push({ kind, orig: null, time, ...values, dirty: true });
     this._render();
   }
 
@@ -263,8 +272,8 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _invalid(row) {
     if (!/^\d{1,2}:\d{2}/.test(row.time || "")) return "Enter a time.";
-    if (this._sensors) return row.sensors && row.sensors.length ? null : "Choose a sensor.";
-    if (Object.values(this._values(row)).some((v) => v === null || v === undefined || Number.isNaN(v)))
+    if (row.kind === SENSORS) return row.sensors && row.sensors.length ? null : "Choose a sensor.";
+    if (Object.values(this._values(row, row.kind)).some((v) => v === null || v === undefined || Number.isNaN(v)))
       return "Enter a temperature.";
     return null;
   }
@@ -287,12 +296,12 @@ class ProtoNestScheduleCard extends HTMLElement {
       this._render();
       return;
     }
-    const [kind, day] = [this._activeKind, this._open];
+    const [kind, day] = [row.kind, this._open];
     const time = quarter(row.time);
-    const values = this._values(row);
+    const values = this._values(row, kind);
     this._run(async () => {
-      if (kind === "sensors") {
-        const others = this._entries().filter((e) => !(e.day === day && e.time === row.orig));
+      if (kind === SENSORS) {
+        const others = this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig));
         await this._setSensorEntries([...others, { day, time, ...values }]);
       } else if (row.orig === null) {
         await this._call(kind, "schedule_add", { day, time, ...values });
@@ -313,10 +322,10 @@ class ProtoNestScheduleCard extends HTMLElement {
       this._render();
       return;
     }
-    const [kind, day] = [this._activeKind, this._open];
+    const [kind, day] = [row.kind, this._open];
     this._run(async () => {
-      if (kind === "sensors") {
-        await this._setSensorEntries(this._entries().filter((e) => !(e.day === day && e.time === row.orig)));
+      if (kind === SENSORS) {
+        await this._setSensorEntries(this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig)));
       } else {
         await this._call(kind, "schedule_remove", { day, time: row.orig });
       }
@@ -332,29 +341,31 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._render();
   }
 
+  // Copies the whole day: the temperature schedule shown and the sensor schedule.
   _copy() {
-    const kind = this._activeKind;
-    const source = this._entries(this._open);
+    const [kind, from] = [this._tempKind, this._open];
+    const withSensors = this._hasSensors;
     const targets = DAYS.filter((d) => this._copyTo && this._copyTo.has(d));
     if (!targets.length) return;
     this._run(async () => {
-      if (kind === "sensors") {
-        // One save: the whole schedule, with those days replaced.
-        const kept = this._entries().filter((e) => !targets.includes(e.day));
-        await this._setSensorEntries([...kept, ...targets.flatMap((day) => source.map((e) => ({ ...e, day })))]);
-      } else {
-        // Change only what differs: each call is a separate write to the thermostat.
-        const same = (a, b) => JSON.stringify(this._values(a)) === JSON.stringify(this._values(b));
-        for (const day of targets) {
-          const existing = new Map(this._entries(day).map((e) => [e.time, e]));
-          for (const e of source) {
-            const old = existing.get(e.time);
-            existing.delete(e.time);
-            if (!old) await this._call(kind, "schedule_add", { day, time: e.time, ...this._values(e) });
-            else if (!same(old, e)) await this._call(kind, "schedule_update", { day, time: e.time, ...this._values(e) });
-          }
-          for (const time of existing.keys()) await this._call(kind, "schedule_remove", { day, time });
+      // Temperatures: change only what differs, as each call is a separate write to the thermostat.
+      const source = this._entries(kind, from);
+      const same = (a, b) => JSON.stringify(this._values(a, kind)) === JSON.stringify(this._values(b, kind));
+      for (const day of targets) {
+        const existing = new Map(this._entries(kind, day).map((e) => [e.time, e]));
+        for (const e of source) {
+          const old = existing.get(e.time);
+          existing.delete(e.time);
+          if (!old) await this._call(kind, "schedule_add", { day, time: e.time, ...this._values(e, kind) });
+          else if (!same(old, e)) await this._call(kind, "schedule_update", { day, time: e.time, ...this._values(e, kind) });
         }
+        for (const time of existing.keys()) await this._call(kind, "schedule_remove", { day, time });
+      }
+      // Sensors: one save, the whole schedule with those days replaced.
+      if (withSensors) {
+        const sensorSource = this._entries(SENSORS, from);
+        const kept = this._entries(SENSORS).filter((e) => !targets.includes(e.day));
+        await this._setSensorEntries([...kept, ...targets.flatMap((day) => sensorSource.map((e) => ({ ...e, day })))]);
       }
       this._copyTo = null;
     });
@@ -362,9 +373,8 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   // --- rendering --------------------------------------------------------------------
 
-  _chip(entry) {
+  _chip(entry, kind) {
     const pct = (minutes(entry.time) / (24 * 60)) * 100;
-    const kind = this._activeKind;
     const edge = pct < 4 ? "start" : pct > 96 ? "end" : "";
     const [label, inner] =
       kind === "range"
@@ -378,19 +388,19 @@ class ProtoNestScheduleCard extends HTMLElement {
     const colors = ids.map((i) => this._option(i).color);
     if (colors.length === 1) return colors[0];
     // Averaging: stripes of each sensor's colour.
-    const stops = colors.map((c, i) => `${c} ${i * 8}px ${(i + 1) * 8}px`).join(", ");
+    const stops = colors.map((c, i) => `${c} ${i * 6}px ${(i + 1) * 6}px`).join(", ");
     return `repeating-linear-gradient(135deg, ${stops})`;
   }
 
   // The sensor schedule as coloured bands: each entry runs until the next one,
   // so a day starts with whatever was in effect at the end of the day before.
   _bands(day) {
-    const all = this._entries();
+    const all = this._entries(SENSORS);
     if (!all.length) return "";
     const dayIdx = DAYS.indexOf(day);
     const before = all.filter((e) => DAYS.indexOf(e.day) < dayIdx);
     const carried = before.length ? before[before.length - 1] : all[all.length - 1];
-    const starts = [{ at: 0, e: carried }, ...this._entries(day).map((e) => ({ at: minutes(e.time), e }))]
+    const starts = [{ at: 0, e: carried }, ...this._entries(SENSORS, day).map((e) => ({ at: minutes(e.time), e }))]
       .filter((s, i, list) => !(i === 0 && list[1] && list[1].at === 0));
     return starts
       .map((s, i) => {
@@ -407,12 +417,13 @@ class ProtoNestScheduleCard extends HTMLElement {
     const legend = this._options
       .map((o) => `<span class="key"><i style="background:${o.color}"></i>${esc(o.name)} <span class="reading" data-entity="${esc(o.entity_id || "")}">${esc(this._reading(o.entity_id))}</span></span>`)
       .join("");
+    const avg = this._options.filter((o) => o.id !== THERMOSTAT).slice(0, 2).map((o) => o.id);
     return `
       <div class="run">
         <button class="switch ${ss.enabled ? "on" : ""}" data-act="toggle-schedule" role="switch" aria-checked="${ss.enabled}" ${this._busy ? "disabled" : ""}><i></i></button>
-        <span>${ss.enabled ? "Home Assistant switches the target sensor on this schedule." : "Off: the target sensor stays as it is."}</span>
+        <span>Sensor schedule ${ss.enabled ? "on: Home Assistant switches the target sensor at each entry." : "off: the target sensor stays as it is."}</span>
       </div>
-      <div class="legend">${legend}<span class="key avg"><i style="background:${this._fill(this._options.slice(1, 3).map((o) => o.id))}"></i>striped = average</span></div>`;
+      <div class="legend">${legend}${avg.length > 1 ? `<span class="key avg"><i style="background:${this._fill(avg)}"></i>striped = average</span>` : ""}</div>`;
   }
 
   _updateReadings() {
@@ -424,7 +435,7 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _editor() {
     this._ensureRows();
-    const range = this._activeKind === "range";
+    const tempKind = this._tempKind;
     const step = this._fahrenheit ? 1 : 0.5;
     const [lo, hi] = this._fahrenheit ? [50, 90] : [10, 32];
     const dis = this._busy ? "disabled" : "";
@@ -434,20 +445,25 @@ class ProtoNestScheduleCard extends HTMLElement {
       `<span class="picks">${this._options
         .map((o) => `<button class="pick ${r.sensors.includes(o.id) ? "on" : ""}" style="--c:${o.color}" data-act="pick" data-i="${i}" data-id="${esc(o.id)}" ${dis}>${esc(o.name)}</button>`)
         .join("")}</span>`;
-    const what = this._sensors ? "sensor" : KINDS[this._activeKind].toLowerCase();
-    const rows = this._rows
-      .map(
-        (r, i) => `
-      <div class="entry ${r.dirty ? "dirty" : ""} ${this._sensors ? "sensors" : ""}">
+    const row = (r, i) => `
+      <div class="entry ${r.dirty ? "dirty" : ""} ${r.kind === SENSORS ? "sensors" : ""}">
         <input class="time" type="time" step="${STEP_MINUTES * 60}" value="${esc(r.time)}" data-i="${i}" data-field="time" ${dis}>
-        ${this._sensors
+        ${r.kind === SENSORS
           ? picks(i, r)
-          : `<span class="temps">${range ? `${num(i, "target_temp_low", r.target_temp_low)}<span class="dash">–</span>${num(i, "target_temp_high", r.target_temp_high)}` : num(i, "temperature", r.temperature)}<span class="unit">${esc(this._unit)}</span></span>`}
+          : `<span class="temps">${r.kind === "range" ? `${num(i, "target_temp_low", r.target_temp_low)}<span class="dash">–</span>${num(i, "target_temp_high", r.target_temp_high)}` : num(i, "temperature", r.temperature)}<span class="unit">${esc(this._unit)}</span></span>`}
         <button class="icon save" data-act="save" data-i="${i}" title="Save" ${r.dirty ? "" : "hidden"} ${dis}>✓</button>
         <button class="icon delete" data-act="delete" data-i="${i}" title="Delete" ${dis}>✕</button>
-      </div>`
-      )
-      .join("");
+      </div>`;
+    const section = (kind, title, empty, hint = "") => {
+      const rows = this._rows.map((r, i) => (r.kind === kind ? row(r, i) : "")).join("");
+      return `
+        <div class="section">
+          <div class="section-head"><span>${esc(title)}</span><button class="text" data-act="add" data-kind="${kind}" ${dis}>+ Add</button></div>
+          ${rows || `<div class="empty">${esc(empty)}</div>`}
+          ${rows && hint ? `<div class="hint">${esc(hint)}</div>` : ""}
+        </div>`;
+    };
+    const what = this._hasSensors ? `${KINDS[tempKind].toLowerCase()} and sensor schedules` : `${KINDS[tempKind].toLowerCase()} schedule`;
     const copy = this._copyTo
       ? `<div class="copy">
           <span>Copy ${DAY_NAMES[this._open]} to</span>
@@ -459,15 +475,14 @@ class ProtoNestScheduleCard extends HTMLElement {
             .map((d) => `<button class="pill ${this._copyTo.has(d) ? "on" : ""}" data-act="copy-day" data-day="${d}" ${dis}>${DAY_NAMES[d]}</button>`)
             .join("")}
           <button class="text" data-act="copy-go" ${dis || this._copyTo.size ? "" : "disabled"} ${dis}>Copy</button>
-          <div class="hint">Replaces those days' ${esc(what)} schedule.</div>
+          <div class="hint">Replaces those days' ${esc(what)}.</div>
         </div>`
       : "";
     return `
       <div class="editor">
-        ${rows || `<div class="empty">No ${esc(what)} entries on ${DAY_NAMES[this._open]}.</div>`}
-        ${this._sensors && this._rows.length ? `<div class="hint">Pick two or more sensors to average them.</div>` : ""}
+        ${section(tempKind, `${KINDS[tempKind]} temperatures`, `No ${KINDS[tempKind].toLowerCase()} entries on ${DAY_NAMES[this._open]}.`)}
+        ${this._hasSensors ? section(SENSORS, "Sensors", `No sensor entries on ${DAY_NAMES[this._open]}.`, "Pick two or more sensors to average them.") : ""}
         <div class="actions">
-          <button class="text" data-act="add" ${dis}>+ Add</button>
           <button class="text" data-act="copy" ${dis || this._rows.length ? "" : "disabled"} ${dis}>Copy to…</button>
           <span class="spacer"></span>
           <button class="text" data-act="close" ${dis}>Done</button>
@@ -486,29 +501,29 @@ class ProtoNestScheduleCard extends HTMLElement {
     } else if (!this._schedule) {
       body = `<div class="warn">${esc(this._config.entity)} has no schedule (is it a ProtoNest thermostat, version 0.1.3 or later?)</div>`;
     } else {
-      if (this._sensors && !this._sensorSchedule) this._kind = this._pinned = null; // not available: fall back
+      const kind = this._tempKind;
+      const sensors = this._hasSensors;
       const now = new Date();
       const today = DAYS[(now.getDay() + 6) % 7];
       const nowPct = ((now.getHours() * 60 + now.getMinutes()) / (24 * 60)) * 100;
-      const rows = DAYS.map((day) => {
-        const marks = this._sensors ? this._bands(day) : this._entries(day).map((e) => this._chip(e)).join("");
-        return `
+      const rows = DAYS.map((day) => `
           <div class="row ${this._open === day ? "open" : ""}" data-act="day" data-day="${day}" role="button" tabindex="0">
             <span class="day ${day === today ? "today" : ""}">${DAY_NAMES[day]}</span>
-            <div class="track ${this._sensors ? "bands" : ""}">${marks}${day === today ? `<span class="now" style="left:${nowPct}%"></span>` : ""}</div>
+            <div class="bars">
+              <div class="track">${this._entries(kind, day).map((e) => this._chip(e, kind)).join("")}</div>
+              ${sensors ? `<div class="track bands">${this._bands(day)}</div>` : ""}
+              ${day === today ? `<span class="now" style="left:${nowPct}%"></span>` : ""}
+            </div>
           </div>
-          ${this._open === day ? this._editor() : ""}`;
-      }).join("");
+          ${this._open === day ? this._editor() : ""}`).join("");
       const tabs = Object.entries(KINDS)
-        .filter(([k]) => k !== "sensors" || this._sensorSchedule)
-        .map(([k, label]) => `<button class="tab ${k === this._activeKind ? "on" : ""}" data-act="kind" data-kind="${k}" ${this._busy ? "disabled" : ""}>${label}</button>`)
+        .map(([k, label]) => `<button class="tab ${k === kind ? "on" : ""}" data-act="kind" data-kind="${k}" ${this._busy ? "disabled" : ""}>${label}</button>`)
         .join("");
       body = `
         <div class="tabs">${tabs}</div>
-        ${this._sensors ? this._sensorHeader() : ""}
+        ${sensors ? this._sensorHeader() : ""}
         <div class="axis"><span></span><div class="hours">${[0, 6, 12, 18, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${h === 24 ? "" : h}</span>`).join("")}</div></div>
         ${rows}
-        ${this._sensors && !this._entries().length && !this._open ? `<div class="empty">No entries yet: tap a day to add some.</div>` : ""}
         ${this._error ? `<div class="error">${esc(this._error)}</div>` : ""}`;
     }
     this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card><div class="head">${esc(title)} schedule</div><div class="body">${body}</div></ha-card>`;
@@ -531,7 +546,7 @@ class ProtoNestScheduleCard extends HTMLElement {
           this._rows = null;
           this._copyTo = null;
           this._render();
-        } else if (act === "add") this._addRow();
+        } else if (act === "add") this._addRow(el.dataset.kind);
         else if (act === "save") this._saveRow(Number(el.dataset.i));
         else if (act === "delete") this._deleteRow(Number(el.dataset.i));
         else if (act === "pick") this._pick(Number(el.dataset.i), el.dataset.id);
@@ -578,16 +593,16 @@ const STYLE = `
   .axis, .row { display: grid; grid-template-columns: 38px 1fr; align-items: center; }
   .hours { position: relative; height: 14px; margin: 0 14px; font-size: 0.7em; color: var(--secondary-text-color); }
   .hours span { position: absolute; transform: translateX(-50%); }
-  .row { min-height: 34px; cursor: pointer; border-radius: 8px; }
+  .row { min-height: 34px; padding: 2px 0; cursor: pointer; border-radius: 8px; }
   .row:hover, .row.open { background: var(--secondary-background-color); }
   .row:focus-visible { outline: 2px solid var(--primary-color); }
   .day { font-size: 0.85em; color: var(--secondary-text-color); padding-left: 4px; }
   .day.today { color: var(--primary-color); font-weight: 600; }
-  .track { position: relative; height: 26px; margin: 0 14px;
+  .bars { position: relative; margin: 0 14px; }
+  .track { position: relative; height: 26px;
            background: linear-gradient(var(--divider-color), var(--divider-color)) center / 100% 2px no-repeat; }
-  .track.bands { background: none; }
-  .now { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--primary-color); opacity: 0.6; z-index: 2; }
-  .track.bands .now { background: var(--primary-text-color); opacity: 0.8; }
+  .track.bands { height: 16px; margin-top: 2px; background: none; }
+  .now { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--primary-text-color); opacity: 0.55; z-index: 2; }
   .chip { position: absolute; top: 3px; transform: translateX(-50%); min-width: 22px; padding: 2px 5px;
           border-radius: 10px; font-size: 0.75em; line-height: 16px; text-align: center; color: #fff; white-space: nowrap;
           box-shadow: 0 0 0 2px var(--card-background-color, #fff); }
@@ -597,11 +612,11 @@ const STYLE = `
   .chip.range { display: flex; padding: 0; overflow: hidden; }
   .chip.range b { font-weight: inherit; padding: 2px 5px; }
   .chip.range .lo { background: var(--heat); } .chip.range .hi { background: var(--cool); }
-  .band { position: absolute; top: 3px; bottom: 3px; box-sizing: border-box; border-right: 2px solid var(--card-background-color, #fff);
-          border-radius: 4px; overflow: hidden; color: #fff; font-size: 0.72em; line-height: 20px; }
-  .band span { display: block; padding: 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  .band { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border-right: 2px solid var(--card-background-color, #fff);
+          border-radius: 3px; overflow: hidden; color: #fff; font-size: 0.65em; line-height: 16px; }
+  .band span { display: block; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                text-shadow: 0 0 3px rgba(0, 0, 0, 0.6); }
-  .run { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 0.9em; color: var(--secondary-text-color); }
+  .run { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 0.85em; color: var(--secondary-text-color); }
   .switch { flex: none; position: relative; width: 36px; height: 20px; border-radius: 10px; border: none; padding: 0;
             background: var(--switch-unchecked-track-color, var(--disabled-color, #bdbdbd)); }
   .switch i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s; }
@@ -611,6 +626,9 @@ const STYLE = `
   .key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
   .key .reading, .key.avg { color: var(--secondary-text-color); }
   .editor { margin: 4px 0 10px 38px; padding: 8px 10px; border-radius: 8px; background: var(--secondary-background-color); }
+  .section + .section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider-color); }
+  .section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.85em; font-weight: 500;
+                  color: var(--secondary-text-color); }
   .entry { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   .entry.sensors { align-items: flex-start; }
   .entry.dirty .time, .entry.dirty .temp { border-color: var(--primary-color); }
@@ -629,7 +647,7 @@ const STYLE = `
   .icon { border: none; background: none; color: var(--secondary-text-color); font-size: 1em; padding: 4px 6px; border-radius: 50%; }
   .icon.save { color: var(--primary-color); font-weight: 700; }
   .icon.delete:hover { color: var(--error-color, #db4437); }
-  .actions { display: flex; gap: 8px; margin-top: 6px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
   .spacer { flex: 1; }
   .text { border: none; background: none; color: var(--primary-color); padding: 4px 6px; font-weight: 500; }
   .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 0.9em;
@@ -649,5 +667,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "protonest-schedule-card",
   name: "ProtoNest schedule",
-  description: "View and edit a Nest thermostat's weekly heat, cool and heat · cool schedules, and its Home Assistant target sensor schedule.",
+  description: "View and edit a Nest thermostat's weekly temperature schedule and its Home Assistant target sensor schedule.",
 });
