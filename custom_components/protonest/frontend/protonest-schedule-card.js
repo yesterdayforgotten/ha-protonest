@@ -18,12 +18,14 @@ const MODE_KIND = { heat: "heat", cool: "cool", heat_cool: "range" };
 const SENSORS = "sensors"; // the kind of a sensor schedule row
 const STEP_MINUTES = 15; // the thermostat only takes quarter hours
 const THERMOSTAT = "thermostat"; // the thermostat's own sensor, in the sensor schedule
-const SENSOR_COLORS = ["#8e24aa", "#00897b", "#e53935", "#3949ab", "#f4511e", "#7cb342", "#6d4c41", "#00acc1"];
+// Cool, muted tones that sit together in an average's stripes, clear of the heat and cool chips.
+const SENSOR_COLORS = ["#7e57c2", "#26a69a", "#5c6bc0", "#ab47bc", "#66bb6a", "#8d6e63", "#ec407a", "#78a6c8"];
 const THERMOSTAT_COLOR = "#78909c";
 const DAY_SETS = { all: DAYS, weekdays: DAYS.slice(0, 5), weekend: DAYS.slice(5) }; // "Copy to…" shortcuts
 const DAY_SET_NAMES = { all: "All", weekdays: "Weekdays", weekend: "Weekend" };
 const DAY_FULL = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
 // mdi:clock-outline
+const DELETE_ICON = "M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19M8,9H16V19H8V9M15.5,4L14.5,3H9.5L8.5,4H5V6H19V4H15.5Z";
 const CLOCK_ICON = "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
 const DRAG_PX = 6; // how far a press moves before it's a drag rather than a tap
 
@@ -51,6 +53,10 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._busy = false;
     this._error = null;
     this._moves = this._moves || []; // dropped entries, shown at their new time until confirmed
+    this._sent = this._sent || {}; // kind -> {entries, at}: what was last saved, shown until the thermostat confirms it
+    this._chain = Promise.resolve(); // saves go one at a time, each building on the last
+    this._inflight = 0;
+    this._status = "";
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.addEventListener("keydown", (ev) => this._key(ev));
@@ -75,11 +81,16 @@ class ProtoNestScheduleCard extends HTMLElement {
       const at = (t) => this._stored(mv.kind).some((e) => e.day === mv.day && e.time === t);
       return !(at(mv.to) && !at(mv.from));
     });
+    // What was saved is now stored (or something else changed it): show the stored schedule.
+    for (const kind of Object.keys(this._sent)) {
+      const keys = (list) => JSON.stringify(list.map((e) => `${e.day} ${e.time}`).sort());
+      const stored = kind === SENSORS ? (this._sensorSchedule && this._sensorSchedule.entries) || [] : (this._schedule && this._schedule[kind]) || [];
+      if (keys(stored) === keys(this._sent[kind].entries)) delete this._sent[kind];
+    }
     // A drag that hasn't moved yet holds an element this redraw is about to replace.
     if (this._drag && !this._drag.moved) this._drag = null;
-    // Don't throw away edits the user hasn't saved yet.
-    if (this._rows && this._rows.some((r) => r.dirty)) return;
-    this._rows = null;
+    // Keep the rows being edited or saved; otherwise take the day afresh.
+    if (!this._inflight && !(this._rows && this._rows.some((r) => r.dirty))) this._rows = null;
     this._render();
   }
 
@@ -179,6 +190,8 @@ class ProtoNestScheduleCard extends HTMLElement {
   }
 
   _stored(kind) {
+    const sent = this._sent[kind];
+    if (sent && Date.now() - sent.at < 20 * 1000) return sent.entries;
     return kind === SENSORS
       ? (this._sensorSchedule && this._sensorSchedule.entries) || []
       : (this._schedule && this._schedule[kind]) || [];
@@ -247,11 +260,48 @@ class ProtoNestScheduleCard extends HTMLElement {
     await this._hass.callService("protonest", service, { schedule: kind, ...data }, {
       entity_id: this._config.entity,
     });
+    const { day, time, new_time: to, ...values } = data;
+    const at = (e) => e.day === day && e.time === time;
+    let list = this._stored(kind).map((e) => ({ ...e }));
+    if (service === "schedule_add") list.push({ day, time, ...values });
+    else if (service === "schedule_update") list = list.map((e) => (at(e) ? { ...e, ...values, time: to || time } : e));
+    else if (service === "schedule_remove") list = list.filter((e) => !at(e));
+    this._sent[kind] = { entries: list, at: Date.now() };
   }
 
   async _setSensorEntries(list) {
     const entries = list.map((e) => ({ day: e.day, time: e.time, sensors: e.sensors }));
     await this._hass.callService("protonest", "set_sensor_schedule", { entries }, { entity_id: this._config.entity });
+    this._sent[SENSORS] = { entries, at: Date.now() };
+  }
+
+  // Saves run one after another, so each builds on what the last one saved.
+  _queue(work) {
+    this._inflight++;
+    this._setStatus("Saving…");
+    const done = this._chain.then(work).then(() => null, (err) => (err && err.message) || String(err));
+    this._chain = done.then((err) => {
+      this._inflight--;
+      if (err) this._error = err;
+      this._status = this._inflight ? "Saving…" : err ? "" : "Saved";
+      setTimeout(() => this._render(), 0); // not in the middle of moving the focus (Tab after an edit)
+    });
+    return this._chain;
+  }
+
+  _setStatus(text) {
+    this._status = text;
+    const el = this.shadowRoot && this.shadowRoot.querySelector(".status");
+    if (el) el.textContent = text;
+  }
+
+  // Shown without a redraw, which could swallow the click that moved the focus.
+  _showError(text) {
+    this._error = text;
+    const el = this.shadowRoot && this.shadowRoot.querySelector(".error");
+    if (!el) return;
+    el.textContent = text || "";
+    el.hidden = !text;
   }
 
   async _run(work) {
@@ -267,10 +317,14 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._render();
   }
 
-  // Unsaved edits in the open day: ask before they're thrown away.
+  // Edits save as they're made; only an entry that can't be saved yet (no time, say) is left.
+  // Ask before throwing that away.
   _discardOk() {
-    if (!this._rows || !this._rows.some((r) => r.dirty)) return true;
-    return window.confirm(`Discard your unsaved changes to ${DAY_FULL[this._open]}?`);
+    if (!this._rows) return true;
+    this._rows.filter((r) => r.dirty).forEach((r) => this._commit(r));
+    const left = this._rows.find((r) => r.dirty);
+    if (!left) return true;
+    return window.confirm(`An entry on ${DAY_FULL[this._open]} isn't complete: ${this._invalid(left) || this._clash(left)} Discard it?`);
   }
 
   _openDay(day) {
@@ -285,11 +339,12 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._rows = null;
     this._copyTo = null;
     this._error = null;
+    this._status = "";
     this._render();
     return true;
   }
 
-  // Esc closes "Copy to", then the day; Enter saves the row being edited.
+  // Esc closes "Copy to", then the day; Enter saves the entry being edited.
   _key(ev) {
     if (this._busy) return;
     if (ev.key === "Escape" && ev.target && ev.target.dataset && ev.target.dataset.field === "time" && this._closeTimes(ev.target)) {
@@ -304,12 +359,37 @@ class ProtoNestScheduleCard extends HTMLElement {
       ev.preventDefault();
       this._stepTime(ev.target, ev.key === "ArrowUp" ? 1 : -1);
     } else if (ev.key === "Enter" && ev.target && ev.target.dataset && ev.target.dataset.field) {
-      const i = Number(ev.target.dataset.i);
-      if (this._rows && this._rows[i] && this._rows[i].dirty) {
+      const row = this._rows && this._rows[Number(ev.target.dataset.i)];
+      if (row && row.dirty) {
         ev.preventDefault();
-        this._saveRow(i);
+        if (ev.target.dataset.field === "time") {
+          this._closeTimes(ev.target);
+          this._tidyTime(ev.target);
+        }
+        if (ev.target.dataset.field !== "time") this._readField(ev.target);
+        this._commit(row);
       }
     }
+  }
+
+  _readField(input) {
+    const row = this._rows && this._rows[Number(input.dataset.i)];
+    if (!row) return;
+    const field = input.dataset.field;
+    if (field === "time") {
+      const at = ProtoNestScheduleCard.parseTime(input.value);
+      if (row.timeText === input.value && row.dirty) return;
+      row.timeText = input.value;
+      row.time = at === null ? "" : hhmm(at);
+      input.classList.toggle("bad", at === null && input.value.trim() !== "");
+      this._syncPick(input, row.time);
+    } else {
+      const value = input.value === "" ? null : Number(input.value);
+      if (value === row[field] && !row.dirty) return;
+      row[field] = value;
+    }
+    row.dirty = true;
+    this._markDirty(input);
   }
 
   _tidyTime(input) {
@@ -355,6 +435,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       if (!opt) return;
       this._setTime(input, opt.dataset.time);
       this._closeTimes(input);
+      this._commit(this._rows && this._rows[Number(input.dataset.i)]);
     });
     box.appendChild(list);
     const row = this._rows && this._rows[Number(input.dataset.i)];
@@ -389,6 +470,11 @@ class ProtoNestScheduleCard extends HTMLElement {
     row.dirty = true;
     input.value = this._fmtTime(minutes(row.time));
     input.classList.remove("bad");
+    this._markDirty(input);
+  }
+
+  // Shown without a redraw, which would take the focus from the field being typed in.
+  _markDirty(input) {
     const entry = input.closest && input.closest(".entry");
     if (entry) entry.classList.add("dirty");
   }
@@ -441,7 +527,14 @@ class ProtoNestScheduleCard extends HTMLElement {
     const row = { kind, orig: null, time, ...values, dirty: true };
     this._rows.push(row);
     if (kind === SENSORS) this._expanded = row;
+    this._commit(row);
     this._render();
+    // Ready to type its time over.
+    const input = this.shadowRoot.querySelector(`input[data-i="${this._rows.indexOf(row)}"][data-field="time"]`);
+    if (input) {
+      input.focus();
+      input.select();
+    }
   }
 
   // Sensor rows: the thermostat alone, one sensor, or several to average.
@@ -453,6 +546,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     else picked = [...picked, id];
     row.sensors = picked;
     row.dirty = true;
+    this._commit(row);
     this._render();
   }
 
@@ -475,49 +569,70 @@ class ProtoNestScheduleCard extends HTMLElement {
     if (i >= 0) this._rows.splice(i, 1);
   }
 
-  _saveRow(i) {
-    const row = this._rows[i];
-    const problem = this._invalid(row);
+  _clash(row) {
+    if (!row.time) return null;
+    const at = minutes(quarter(row.time));
+    const other = this._rows.find((r) => r !== row && r.kind === row.kind && r.time && minutes(quarter(r.time)) === at);
+    return other ? `There's already an entry at ${this._fmtTime(at)}.` : null;
+  }
+
+  // Save one row as soon as it's complete: a time field left or a list pick, a temperature
+  // entered, a sensor picked. Rows that aren't complete stay as typed, marked.
+  _commit(row) {
+    if (!row || !row.dirty || !this._rows || !this._rows.includes(row)) return;
+    const problem = this._invalid(row) || this._clash(row);
     if (problem) {
-      this._error = problem;
-      this._render();
+      this._showError(problem);
       return;
     }
+    this._showError(null);
     const [kind, day] = [row.kind, this._open];
     const time = quarter(row.time);
     const values = this._values(row, kind);
-    this._run(async () => {
-      if (kind === SENSORS) {
-        const others = this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig));
-        await this._setSensorEntries([...others, { day, time, ...values }]);
-      } else if (row.orig === null) {
-        await this._call(kind, "schedule_add", { day, time, ...values });
-      } else {
-        await this._call(kind, "schedule_update", {
-          day, time: row.orig, ...(time !== row.orig ? { new_time: time } : {}), ...values,
-        });
+    row.dirty = false;
+    const entry = this.shadowRoot && this.shadowRoot.querySelector(`.entry[data-row="${this._rows.indexOf(row)}"]`);
+    if (entry) entry.classList.remove("dirty");
+    this._queue(async () => {
+      try {
+        if (kind === SENSORS) {
+          const others = this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig));
+          await this._setSensorEntries([...others, { day, time, ...values }]);
+        } else if (row.orig === null) {
+          await this._call(kind, "schedule_add", { day, time, ...values });
+        } else {
+          await this._call(kind, "schedule_update", {
+            day, time: row.orig, ...(time !== row.orig ? { new_time: time } : {}), ...values,
+          });
+        }
+        row.orig = time;
+        if (!row.dirty) Object.assign(row, { time, timeText: null });
+      } catch (err) {
+        row.dirty = true;
+        throw err;
       }
-      // The rows stay as saved until the stored schedule changes to match (see set hass):
-      // the thermostat confirms a write a moment after it's accepted.
-      Object.assign(row, { orig: time, time, timeText: null, dirty: false });
     });
   }
 
   _deleteRow(i) {
     const row = this._rows[i];
-    if (row.orig === null) {
-      this._forget(row);
-      this._render();
-      return;
-    }
     const [kind, day] = [row.kind, this._open];
-    this._run(async () => {
-      if (kind === SENSORS) {
-        await this._setSensorEntries(this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig)));
-      } else {
-        await this._call(kind, "schedule_remove", { day, time: row.orig });
+    this._forget(row);
+    if (this._expanded === row) this._expanded = null;
+    this._render();
+    // A new entry may still be on its way: wait for it, then remove it.
+    if (row.orig === null && !this._inflight) return;
+    this._queue(async () => {
+      if (row.orig === null) return;
+      try {
+        if (kind === SENSORS) {
+          await this._setSensorEntries(this._entries(SENSORS).filter((e) => !(e.day === day && e.time === row.orig)));
+        } else {
+          await this._call(kind, "schedule_remove", { day, time: row.orig });
+        }
+      } catch (err) {
+        if (this._rows && !this._rows.some((r) => r.dirty)) this._rows = null; // show it again
+        throw err;
       }
-      this._forget(row);
     });
   }
 
@@ -535,6 +650,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     const targets = DAYS.filter((d) => this._copyTo && this._copyTo.has(d));
     if (!targets.length) return;
     this._run(async () => {
+      await this._chain; // the day as just edited
       // Temperatures: change only what differs, as each call is a separate write to the thermostat.
       const source = this._entries(kind, from);
       const same = (a, b) => JSON.stringify(this._values(a, kind)) === JSON.stringify(this._values(b, kind));
@@ -589,7 +705,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     }
     if (!d.moved && this._rows && this._rows.some((r) => r.dirty)) {
       this._drag = null;
-      this._error = `Save or discard the changes to ${DAY_FULL[this._open]} first.`;
+      this._error = `Finish the entry being edited on ${DAY_FULL[this._open]} first.`;
       this._render();
       return;
     }
@@ -634,11 +750,10 @@ class ProtoNestScheduleCard extends HTMLElement {
       return;
     }
     const time = hhmm(d.to);
-    // Built now, from what's shown (including earlier drops still being saved).
     let save;
     if (d.kind === SENSORS) {
-      const list = this._entries(SENSORS).map((e) => (e.day === d.day && e.time === d.time ? { ...e, time } : e));
-      save = () => this._setSensorEntries(list);
+      // The whole sensor schedule, as shown when it's sent (this move and any before it).
+      save = () => this._setSensorEntries(this._entries(SENSORS));
     } else {
       const entry = this._entries(d.kind, d.day).find((e) => e.time === d.time);
       const data = { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) };
@@ -658,7 +773,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._moves.push(move);
     // The open day's editor follows the entry to its new time.
     const row = this._open === d.day && this._rows && this._rows.find((r) => r.kind === d.kind && r.orig === d.time);
-    this._run(async () => {
+    this._queue(async () => {
       try {
         await save();
       } catch (err) {
@@ -667,6 +782,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       }
       if (row) Object.assign(row, { orig: time, time, timeText: null });
     });
+    this._render();
   }
 
   // --- rendering --------------------------------------------------------------------
@@ -775,14 +891,13 @@ class ProtoNestScheduleCard extends HTMLElement {
         <i style="background:${this._fill(r.sensors)}"></i><span>${esc(this._sensorsLabel(r.sensors))}</span><b>${this._expanded === r ? "▴" : "▾"}</b>
       </button>`;
     const row = (r, i) => `
-      <div class="entry ${r.dirty ? "dirty" : ""} ${r.focus ? "focus" : ""}">
+      <div class="entry ${r.dirty ? "dirty" : ""} ${r.focus ? "focus" : ""}" data-row="${i}">
         ${timeInput(i, r)}
         ${r.kind === SENSORS
           ? summary(i, r)
           : `<span class="temps">${r.kind === "range" ? `${num(i, "target_temp_low", r.target_temp_low)}<span class="dash">–</span>${num(i, "target_temp_high", r.target_temp_high)}` : num(i, "temperature", r.temperature)}<span class="unit">${esc(this._unit)}</span></span>`}
         <span class="row-actions">
-          <button class="icon save" data-act="save" data-i="${i}" title="Save" ${dis}>✓</button>
-          <button class="icon delete" data-act="delete" data-i="${i}" title="Delete" ${dis}>✕</button>
+          <button class="icon delete" data-act="delete" data-i="${i}" title="Delete this entry" aria-label="Delete this entry" ${dis}><svg viewBox="0 0 24 24"><path d="${DELETE_ICON}"/></svg></button>
         </span>
       </div>
       ${r.kind === SENSORS && this._expanded === r
@@ -813,13 +928,15 @@ class ProtoNestScheduleCard extends HTMLElement {
       : "";
     return `
       <div class="editor">
-        <div class="editor-head"><span>${DAY_FULL[this._open]}</span><button class="icon" data-act="close" title="Close" ${dis}>✕</button></div>
+        <div class="editor-head"><span>Editing ${DAY_FULL[this._open]}</span><span class="status">${esc(this._status)}</span><button class="text" data-act="close" title="Close (Esc)" ${dis}>Close</button></div>
+        <div class="editor-body">
         ${section(tempKind, `${KINDS[tempKind]} temperatures`, `No ${KINDS[tempKind].toLowerCase()} entries on ${DAY_NAMES[this._open]}.`)}
         ${this._hasSensors ? section(SENSORS, "Sensors", `No sensor entries on ${DAY_NAMES[this._open]}.`) : ""}
         <div class="actions">
           <button class="text" data-act="copy" ${dis || this._rows.length ? "" : "disabled"} ${dis}>${this._copyTo ? "Cancel copy" : "Copy to other days…"}</button>
         </div>
         ${copy}
+        </div>
       </div>`;
   }
 
@@ -857,10 +974,53 @@ class ProtoNestScheduleCard extends HTMLElement {
         ${sensors ? this._sensorHeader() : ""}
         <div class="axis"><span></span><div class="hours">${[0, 6, 12, 18, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${h === 24 ? "" : h}</span>`).join("")}</div></div>
         ${rows}
-        ${this._error ? `<div class="error">${esc(this._error)}</div>` : ""}`;
+        <div class="error" ${this._error ? "" : "hidden"}>${esc(this._error || "")}</div>`;
     }
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card><div class="head">${esc(title)} schedule</div><div class="body">${body}</div></ha-card>`;
+    // Keep the field being typed in focused (and where the cursor was) across the redraw.
+    const active = this.shadowRoot.activeElement;
+    let keep = null;
+    if (active && active.dataset) {
+      const d = active.dataset;
+      // Which control: its kind (field, button or clock), what it's for, and its row, if any.
+      const what = d.field ? `[data-field="${d.field}"]` : d.act ? `[data-act="${d.act}"]` : d.pickTime !== undefined ? "select" : null;
+      const extra = ["kind", "id", "day"].filter((k) => d[k] !== undefined).map((k) => `[data-${k}="${CSS.escape(d[k])}"]`).join("");
+      const i = d.i !== undefined ? d.i : d.pickTime;
+      let sel = null;
+      try {
+        sel = active.selectionStart !== undefined ? [active.selectionStart, active.selectionEnd] : null;
+      } catch (err) {
+        sel = null; // number fields have no cursor
+      }
+      if (what) keep = { what: what + extra, row: i !== undefined && this._rows ? this._rows[Number(i)] : null, sel, list: !!this.shadowRoot.querySelector(".times") };
+    }
+    this._rendering = true;
+    // The frame is made once: a new ha-card shows its contents only after it has drawn
+    // itself, so a field in a fresh one can't take the focus straight away.
+    if (!this.shadowRoot.querySelector("ha-card > .body")) {
+      this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card><div class="head"></div><div class="body"></div></ha-card>`;
+    }
+    this.shadowRoot.querySelector("ha-card > .head").textContent = `${title} schedule`;
+    this.shadowRoot.querySelector("ha-card > .body").innerHTML = body;
+    this._rendering = false;
     this._wire();
+    if (keep) {
+      let at = "";
+      if (keep.row && this._rows) {
+        let i = this._rows.indexOf(keep.row);
+        if (i < 0) i = this._rows.findIndex((r) => r.kind === keep.row.kind && r.orig === keep.row.orig);
+        at = keep.what === "select" ? `[data-pick-time="${i}"]` : `[data-i="${i}"]`;
+      }
+      const el = this.shadowRoot.querySelector(keep.what + at);
+      if (el) {
+        el.focus();
+        if (!keep.list) this._closeTimes(el);
+        try {
+          if (keep.sel && keep.sel[0] !== null) el.setSelectionRange(keep.sel[0], keep.sel[1]);
+        } catch (err) {
+          // number fields have no cursor to restore
+        }
+      }
+    }
   }
 
   _wire() {
@@ -882,7 +1042,6 @@ class ProtoNestScheduleCard extends HTMLElement {
           this._copyTo = null;
           this._render();
         } else if (act === "add") this._addRow(el.dataset.kind);
-        else if (act === "save") this._saveRow(Number(el.dataset.i));
         else if (act === "delete") this._deleteRow(Number(el.dataset.i));
         else if (act === "expand") this._expand(Number(el.dataset.i));
         else if (act === "pick") this._pick(Number(el.dataset.i), el.dataset.id);
@@ -911,37 +1070,32 @@ class ProtoNestScheduleCard extends HTMLElement {
     root.querySelectorAll("select[data-pick-time]").forEach((pick) => {
       pick.addEventListener("change", () => {
         const input = pick.closest(".when").querySelector("input.time");
-        if (pick.value) this._setTime(input, pick.value);
+        if (!pick.value) return;
+        this._setTime(input, pick.value);
+        this._commit(this._rows && this._rows[Number(input.dataset.i)]);
       });
     });
     const sets = root.querySelector("select.sets");
     if (sets) sets.addEventListener("change", () => sets.value && this._copySet(sets.value));
     root.querySelectorAll("[data-field]").forEach((input) => {
-      const onEdit = () => {
-        const row = this._rows[Number(input.dataset.i)];
-        const field = input.dataset.field;
-        if (field === "time") {
-          const at = ProtoNestScheduleCard.parseTime(input.value);
-          row.timeText = input.value;
-          row.time = at === null ? "" : hhmm(at);
-          input.classList.toggle("bad", at === null && input.value.trim() !== "");
-          this._syncPick(input, row.time);
-        } else row[field] = input.value === "" ? null : Number(input.value);
-        if (!row.dirty) {
-          row.dirty = true;
-          const entry = input.closest(".entry");
-          entry.classList.add("dirty");
-        }
-      };
-      input.addEventListener("input", onEdit);
-      input.addEventListener("change", onEdit);
+      input.addEventListener("input", () => this._readField(input));
+      if (input.dataset.field !== "time") {
+        // A temperature is entered when it's left, or Enter or a spinner arrow is pressed.
+        input.addEventListener("change", () => {
+          if (this._rendering) return;
+          this._readField(input);
+          this._commit(this._rows[Number(input.dataset.i)]);
+        });
+      }
       // Leaving a time field rounds it to the quarter hour and shows it in HA's format.
       if (input.dataset.field === "time") {
         input.addEventListener("focus", () => this._openTimes(input));
         input.addEventListener("click", () => this._openTimes(input)); // reopens it after a pick
         input.addEventListener("blur", () => {
+          if (this._rendering) return; // only redrawn, not left
           this._closeTimes(input);
           this._tidyTime(input);
+          this._commit(this._rows && this._rows[Number(input.dataset.i)]);
         });
       }
     });
@@ -973,7 +1127,9 @@ const STYLE = `
   .track { position: relative; height: 26px;
            background: linear-gradient(var(--divider-color), var(--divider-color)) center / 100% 2px no-repeat; }
   .track.bands { height: 16px; margin-top: 2px; background: none; }
-  .now { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--primary-text-color); opacity: 0.55; z-index: 2; }
+  /* The time now, on today's row: a thin line with a dot on top, in the colour of today's name. */
+  .now { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--primary-color); z-index: 2; pointer-events: none; }
+  .now::before { content: ""; position: absolute; top: -3px; left: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary-color); }
   .chip { position: absolute; top: 3px; transform: translateX(-50%); min-width: 22px; padding: 2px 5px;
           border-radius: 10px; font-size: 0.75em; line-height: 16px; text-align: center; color: #fff; white-space: nowrap;
           box-shadow: 0 0 0 2px var(--card-background-color, #fff); }
@@ -996,14 +1152,15 @@ const STYLE = `
   .key { display: inline-flex; align-items: center; gap: 4px; }
   .key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
   .key .reading, .key.avg { color: var(--secondary-text-color); }
-  .editor { margin: 4px 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--secondary-background-color); }
+  .editor { margin: 4px 0 10px; border-radius: 8px; overflow: hidden; background: var(--secondary-background-color);
+            border: 1px solid var(--primary-color); }
+  .editor-body { padding: 8px 10px; }
   .section + .section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider-color); }
   .section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.85em; font-weight: 500;
                   color: var(--secondary-text-color); }
   .entry { display: flex; align-items: center; gap: 8px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; }
   .entry.focus { background: var(--card-background-color, #fff); box-shadow: inset 3px 0 0 var(--primary-color); }
   .row-actions { margin-left: auto; display: flex; flex: none; }
-  .entry:not(.dirty) .save { visibility: hidden; }
   .chip, .band { cursor: pointer; }
   .chip { touch-action: none; cursor: grab; }
   .chip.dragging { z-index: 4; cursor: grabbing; transform: translateX(-50%); box-shadow: 0 0 0 2px var(--primary-color); }
@@ -1015,7 +1172,10 @@ const STYLE = `
   .tip { position: absolute; bottom: 100%; transform: translateX(-50%); margin-bottom: 2px; z-index: 5; white-space: nowrap;
          padding: 1px 6px; border-radius: 4px; font-size: 0.75em; background: var(--primary-text-color); color: var(--card-background-color, #fff); }
   .editor-head { display: flex; align-items: center; justify-content: space-between; font-weight: 500;
-                 color: var(--primary-text-color); margin: -2px -4px 4px 0; }
+                 padding: 4px 6px 4px 10px; background: var(--primary-color); color: var(--text-primary-color, #fff); }
+  .editor-head .text { color: inherit; }
+  .editor-head .status { margin-left: auto; margin-right: 8px; font-size: 0.8em; font-weight: normal; opacity: 0.85; }
+  .editor-head .text:hover { background: rgba(255, 255, 255, 0.15); }
   .summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
              border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 8px;
              background: var(--card-background-color, #fff); color: var(--primary-text-color); }
@@ -1053,9 +1213,10 @@ const STYLE = `
   button { font: inherit; cursor: pointer; }
   button:disabled { cursor: default; opacity: 0.5; }
   .icon { border: none; background: none; color: var(--secondary-text-color); font-size: 1em; padding: 4px 6px; border-radius: 50%; }
-  .icon.save { color: var(--primary-color); font-weight: 700; }
+  .icon svg { width: 18px; height: 18px; fill: currentColor; display: block; }
   .icon.delete:hover { color: var(--error-color, #db4437); }
-  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .editor-body .text:hover:not(:disabled) { background: var(--card-background-color, #fff); border-radius: 6px; }
   .text { border: none; background: none; color: var(--primary-color); padding: 4px 6px; font-weight: 500; }
   .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 0.9em;
           color: var(--secondary-text-color); }
