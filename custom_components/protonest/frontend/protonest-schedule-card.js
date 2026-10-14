@@ -17,6 +17,8 @@ const STEP_MINUTES = 15; // the thermostat only takes quarter hours
 const THERMOSTAT = "thermostat"; // the thermostat's own sensor, in the sensor schedule
 const SENSOR_COLORS = ["#8e24aa", "#00897b", "#e53935", "#3949ab", "#f4511e", "#7cb342", "#6d4c41", "#00acc1"];
 const THERMOSTAT_COLOR = "#78909c";
+const DAY_SETS = { all: DAYS, weekdays: DAYS.slice(0, 5), weekend: DAYS.slice(5) }; // "Copy to…" shortcuts
+const DAY_SET_NAMES = { all: "All", weekdays: "Weekdays", weekend: "Weekend" };
 
 const minutes = (hhmm) => {
   const [h, m] = hhmm.split(":").map(Number);
@@ -323,6 +325,13 @@ class ProtoNestScheduleCard extends HTMLElement {
     });
   }
 
+  // "Copy to…" shortcuts: select those days, other than the one being copied.
+  // They only fill in the selection, which can still be adjusted before copying.
+  _copySet(set) {
+    this._copyTo = new Set(DAY_SETS[set].filter((d) => d !== this._open));
+    this._render();
+  }
+
   _copy() {
     const kind = this._activeKind;
     const source = this._entries(this._open);
@@ -442,6 +451,10 @@ class ProtoNestScheduleCard extends HTMLElement {
     const copy = this._copyTo
       ? `<div class="copy">
           <span>Copy ${DAY_NAMES[this._open]} to</span>
+          ${Object.keys(DAY_SETS)
+            .map((k) => `<button class="pill set" data-act="copy-set" data-set="${k}" ${dis}>${DAY_SET_NAMES[k]}</button>`)
+            .join("")}
+          <span class="break"></span>
           ${DAYS.filter((d) => d !== this._open)
             .map((d) => `<button class="pill ${this._copyTo.has(d) ? "on" : ""}" data-act="copy-day" data-day="${d}" ${dis}>${DAY_NAMES[d]}</button>`)
             .join("")}
@@ -531,7 +544,8 @@ class ProtoNestScheduleCard extends HTMLElement {
           const d = el.dataset.day;
           this._copyTo.has(d) ? this._copyTo.delete(d) : this._copyTo.add(d);
           this._render();
-        } else if (act === "copy-go") this._copy();
+        } else if (act === "copy-set") this._copySet(el.dataset.set);
+        else if (act === "copy-go") this._copy();
         ev.stopPropagation();
       };
       el.addEventListener("click", handler);
@@ -622,6 +636,8 @@ const STYLE = `
           color: var(--secondary-text-color); }
   .pill { border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); border-radius: 12px; padding: 2px 8px; }
   .pill.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+  .pill.set { border-style: dashed; }
+  .break { flex-basis: 100%; height: 0; }
   .hint { flex-basis: 100%; font-size: 0.85em; color: var(--secondary-text-color); }
   .empty { color: var(--secondary-text-color); font-size: 0.9em; padding: 4px 0; }
   .error { margin-top: 8px; color: var(--error-color, #db4437); font-size: 0.9em; }
