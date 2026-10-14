@@ -50,6 +50,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._focus = null; // {kind, time}: the entry tapped on a bar, to highlight in the editor
     this._busy = false;
     this._error = null;
+    this._moves = this._moves || []; // dropped entries, shown at their new time until confirmed
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.addEventListener("keydown", (ev) => this._key(ev));
@@ -69,7 +70,13 @@ class ProtoNestScheduleCard extends HTMLElement {
       return;
     }
     this._shown = key;
-    this._moved = null; // the schedule changed: show what's stored
+    // Drop the dropped entries the stored schedule now confirms.
+    this._moves = this._moves.filter((mv) => {
+      const at = (t) => this._stored(mv.kind).some((e) => e.day === mv.day && e.time === t);
+      return !(at(mv.to) && !at(mv.from));
+    });
+    // A drag that hasn't moved yet holds an element this redraw is about to replace.
+    if (this._drag && !this._drag.moved) this._drag = null;
     // Don't throw away edits the user hasn't saved yet.
     if (this._rows && this._rows.some((r) => r.dirty)) return;
     this._rows = null;
@@ -82,6 +89,8 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this._timer);
+    (this._moves || []).forEach((m) => clearTimeout(m.timer));
+    this._moves = [];
   }
 
   _tick() {
@@ -169,13 +178,18 @@ class ProtoNestScheduleCard extends HTMLElement {
     return this._unit.includes("F");
   }
 
-  _entries(kind, day) {
-    let list = kind === SENSORS
+  _stored(kind) {
+    return kind === SENSORS
       ? (this._sensorSchedule && this._sensorSchedule.entries) || []
       : (this._schedule && this._schedule[kind]) || [];
-    // A dropped entry shows at its new time while the save goes through.
-    const mv = this._moved;
-    if (mv && mv.kind === kind) list = list.map((e) => (e.day === mv.day && e.time === mv.from ? { ...e, time: mv.to } : e));
+  }
+
+  _entries(kind, day) {
+    let list = this._stored(kind);
+    // Dropped entries show at their new time while the saves go through.
+    for (const mv of this._moves) {
+      if (mv.kind === kind) list = list.map((e) => (e.day === mv.day && e.time === mv.from ? { ...e, time: mv.to } : e));
+    }
     return list.filter((e) => !day || e.day === day).sort(byTime);
   }
 
@@ -253,8 +267,14 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._render();
   }
 
+  // Unsaved edits in the open day: ask before they're thrown away.
+  _discardOk() {
+    if (!this._rows || !this._rows.some((r) => r.dirty)) return true;
+    return window.confirm(`Discard your unsaved changes to ${DAY_FULL[this._open]}?`);
+  }
+
   _openDay(day) {
-    if (this._busy) return;
+    if (this._busy || !this._discardOk()) return false;
     if (this._open === day) {
       this._open = null;
       this._pinned = null;
@@ -266,6 +286,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._copyTo = null;
     this._error = null;
     this._render();
+    return true;
   }
 
   // Esc closes "Copy to", then the day; Enter saves the row being edited.
@@ -375,7 +396,7 @@ class ProtoNestScheduleCard extends HTMLElement {
   // Tapping an entry on a bar opens its day with that entry highlighted.
   _openEntry(day, kind, time) {
     if (this._busy) return;
-    if (this._open !== day) this._openDay(day);
+    if (this._open !== day && !this._openDay(day)) return;
     this._focus = { kind, time };
     this._scroll = true;
     this._render();
@@ -398,7 +419,11 @@ class ProtoNestScheduleCard extends HTMLElement {
   _addRow(kind) {
     const same = this._rows.filter((r) => r.kind === kind);
     const last = same[same.length - 1];
-    const time = last ? hhmm(Math.min(minutes(last.time) + 60, 23 * 60 + 45)) : "08:00";
+    // An hour after the last entry, or the next free quarter hour from there.
+    const taken = new Set(same.filter((r) => r.time).map((r) => minutes(quarter(r.time))));
+    let at = last && last.time ? Math.min(minutes(quarter(last.time)) + 60, 24 * 60 - STEP_MINUTES) : 8 * 60;
+    for (let n = 0; n < (24 * 60) / STEP_MINUTES && taken.has(at); n++) at = (at + STEP_MINUTES) % (24 * 60);
+    const time = hhmm(at);
     let values;
     if (last) {
       values = this._values(last, kind);
@@ -450,11 +475,6 @@ class ProtoNestScheduleCard extends HTMLElement {
     if (i >= 0) this._rows.splice(i, 1);
   }
 
-  _settled() {
-    // Show what was stored, unless other rows still have unsaved edits.
-    if (this._rows && !this._rows.some((r) => r.dirty)) this._rows = null;
-  }
-
   _saveRow(i) {
     const row = this._rows[i];
     const problem = this._invalid(row);
@@ -477,8 +497,9 @@ class ProtoNestScheduleCard extends HTMLElement {
           day, time: row.orig, ...(time !== row.orig ? { new_time: time } : {}), ...values,
         });
       }
+      // The rows stay as saved until the stored schedule changes to match (see set hass):
+      // the thermostat confirms a write a moment after it's accepted.
       Object.assign(row, { orig: time, time, timeText: null, dirty: false });
-      this._settled();
     });
   }
 
@@ -497,7 +518,6 @@ class ProtoNestScheduleCard extends HTMLElement {
         await this._call(kind, "schedule_remove", { day, time: row.orig });
       }
       this._forget(row);
-      this._settled();
     });
   }
 
@@ -545,13 +565,8 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _dragStart(ev, el) {
     if (this._busy || ev.button > 0 || this._drag) return;
-    if (this._rows && this._rows.some((r) => r.dirty)) {
-      this._error = `Save or discard the changes to ${DAY_FULL[this._open]} first.`;
-      this._render();
-      return;
-    }
+    if (ev.pointerType === "mouse") ev.preventDefault(); // no text selection while dragging
     const { day, kind, time } = el.dataset;
-    this._error = null;
     const at = minutes(time);
     const others = this._entries(kind, day).map((e) => minutes(e.time)).filter((m) => m !== at);
     this._drag = {
@@ -567,7 +582,19 @@ class ProtoNestScheduleCard extends HTMLElement {
     const d = this._drag;
     if (!d || ev.pointerId !== d.id) return;
     if (!d.moved && Math.abs(ev.clientX - d.x) < DRAG_PX) return;
+    const rect = d.track.getBoundingClientRect();
+    if (!d.el.isConnected || !rect.width) {
+      this._drag = null; // redrawn under the pointer
+      return;
+    }
+    if (!d.moved && this._rows && this._rows.some((r) => r.dirty)) {
+      this._drag = null;
+      this._error = `Save or discard the changes to ${DAY_FULL[this._open]} first.`;
+      this._render();
+      return;
+    }
     if (!d.moved) {
+      this._error = null;
       d.moved = true;
       d.el.classList.add("dragging");
       d.tip = document.createElement("span");
@@ -575,7 +602,6 @@ class ProtoNestScheduleCard extends HTMLElement {
       d.track.appendChild(d.tip);
     }
     ev.preventDefault();
-    const rect = d.track.getBoundingClientRect();
     const raw = ((ev.clientX - rect.left) / rect.width) * 24 * 60;
     d.to = Math.min(d.hi, Math.max(d.lo, Math.round(raw / STEP_MINUTES) * STEP_MINUTES));
     this._dragShow(d);
@@ -598,7 +624,7 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _dragEnd(ev, cancelled = false) {
     const d = this._drag;
-    if (!d || ev.pointerId !== d.id) return;
+    if (!d || ev.pointerId !== d.id || ev.currentTarget && ev.currentTarget !== d.el) return;
     this._drag = null;
     if (!d.moved) return; // a tap: the click opens the entry
     this._dragged = true; // swallow the click that follows the drop
@@ -608,27 +634,38 @@ class ProtoNestScheduleCard extends HTMLElement {
       return;
     }
     const time = hhmm(d.to);
-    const save = d.kind === SENSORS
-      ? () => this._setSensorEntries(this._entries(SENSORS).map((e) => (e.day === d.day && e.time === d.time ? { ...e, time } : e)))
-      : ((entry) => () => this._call(d.kind, "schedule_update", { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) }))(
-          this._entries(d.kind, d.day).find((e) => e.time === d.time));
-    const moved = { kind: d.kind, day: d.day, from: d.time, to: time };
-    this._moved = moved;
-    clearTimeout(this._movedTimer);
-    this._movedTimer = setTimeout(() => {
-      // Never confirmed: go back to what's stored.
-      if (this._moved !== moved) return;
-      this._moved = null;
+    // Built now, from what's shown (including earlier drops still being saved).
+    let save;
+    if (d.kind === SENSORS) {
+      const list = this._entries(SENSORS).map((e) => (e.day === d.day && e.time === d.time ? { ...e, time } : e));
+      save = () => this._setSensorEntries(list);
+    } else {
+      const entry = this._entries(d.kind, d.day).find((e) => e.time === d.time);
+      const data = { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) };
+      save = () => this._call(d.kind, "schedule_update", data);
+    }
+    const move = { kind: d.kind, day: d.day, from: d.time, to: time };
+    const forget = () => {
+      clearTimeout(move.timer);
+      this._moves = this._moves.filter((m) => m !== move);
+    };
+    // Never confirmed: go back to what's stored.
+    move.timer = setTimeout(() => {
+      if (!this._moves.includes(move)) return;
+      forget();
       this._render();
     }, 20 * 1000);
+    this._moves.push(move);
+    // The open day's editor follows the entry to its new time.
+    const row = this._open === d.day && this._rows && this._rows.find((r) => r.kind === d.kind && r.orig === d.time);
     this._run(async () => {
       try {
         await save();
       } catch (err) {
-        this._moved = null;
+        forget();
         throw err;
       }
-      this._settled();
+      if (row) Object.assign(row, { orig: time, time, timeText: null });
     });
   }
 
@@ -668,7 +705,7 @@ class ProtoNestScheduleCard extends HTMLElement {
         const end = i + 1 < starts.length ? starts[i + 1].at : 24 * 60;
         const label = this._sensorsLabel(s.e.sensors);
         const [left, width] = [(s.at / (24 * 60)) * 100, ((end - s.at) / (24 * 60)) * 100];
-        return `<span class="band" style="left:${left}%;width:${width}%;background:${this._fill(s.e.sensors)}" data-act="entry" data-day="${s.e.day}" data-kind="${SENSORS}" data-time="${esc(s.e.time)}" data-start="${s.at}" data-end="${end}" title="${esc(this._fmtTime(minutes(s.e.time)))} · ${esc(label)}"><span>${esc(label)}</span></span>`;
+        return `<span class="band" style="left:${left}%;width:${width}%;background:${this._fill(s.e.sensors)}" data-act="entry" data-day="${esc(s.e.day)}" data-kind="${SENSORS}" data-time="${esc(s.e.time)}" data-start="${s.at}" data-end="${end}" title="${esc(this._fmtTime(minutes(s.e.time)))} · ${esc(label)}"><span>${esc(label)}</span></span>`;
       })
       .join("") +
       // A handle at the start of each of this day's entries, to drag its time.
@@ -686,7 +723,7 @@ class ProtoNestScheduleCard extends HTMLElement {
     const avg = this._options.filter((o) => o.id !== THERMOSTAT).slice(0, 2).map((o) => o.id);
     return `
       <div class="run">
-        <button class="switch ${ss.enabled ? "on" : ""}" data-act="toggle-schedule" role="switch" aria-checked="${ss.enabled}" ${this._busy ? "disabled" : ""}><i></i></button>
+        <button class="switch ${ss.enabled ? "on" : ""}" data-act="toggle-schedule" role="switch" aria-checked="${ss.enabled ? "true" : "false"}" ${this._busy ? "disabled" : ""}><i></i></button>
         <span>Sensor schedule ${ss.enabled ? "on: Home Assistant switches the target sensor at each entry." : "off: the target sensor stays as it is."}</span>
       </div>
       <div class="legend">${legend}${avg.length > 1 ? `<span class="key avg"><i style="background:${this._fill(avg)}"></i>striped = average</span>` : ""}</div>`;
@@ -838,7 +875,7 @@ class ProtoNestScheduleCard extends HTMLElement {
         } else if (act === "entry") {
           if (!this._dragged) this._openEntry(el.dataset.day, el.dataset.kind, el.dataset.time);
         } else if (act === "kind") {
-          if (this._busy) return;
+          if (this._busy || el.dataset.kind === this._tempKind || !this._discardOk()) return;
           this._kind = el.dataset.kind;
           if (this._open) this._pinned = this._kind;
           this._rows = null;
@@ -869,6 +906,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       el.addEventListener("pointermove", (ev) => this._dragMove(ev));
       el.addEventListener("pointerup", (ev) => this._dragEnd(ev));
       el.addEventListener("pointercancel", (ev) => this._dragEnd(ev, true));
+      el.addEventListener("lostpointercapture", (ev) => this._dragEnd(ev, true));
     });
     root.querySelectorAll("select[data-pick-time]").forEach((pick) => {
       pick.addEventListener("change", () => {
@@ -931,7 +969,7 @@ const STYLE = `
   .row:focus-visible { outline: 2px solid var(--primary-color); }
   .day { font-size: 0.85em; color: var(--secondary-text-color); padding-left: 4px; }
   .day.today { color: var(--primary-color); font-weight: 600; }
-  .bars { position: relative; margin: 0 14px; }
+  .bars { position: relative; margin: 0 14px; user-select: none; -webkit-user-select: none; }
   .track { position: relative; height: 26px;
            background: linear-gradient(var(--divider-color), var(--divider-color)) center / 100% 2px no-repeat; }
   .track.bands { height: 16px; margin-top: 2px; background: none; }
