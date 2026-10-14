@@ -92,8 +92,6 @@ class ProtoNestScheduleCard extends HTMLElement {
       const stored = kind === SENSORS ? (this._sensorSchedule && this._sensorSchedule.entries) || [] : (this._schedule && this._schedule[kind]) || [];
       if (all(stored) === all(this._sent[kind].entries)) delete this._sent[kind];
     }
-    // A drag that hasn't moved yet holds an element this redraw is about to replace.
-    if (this._drag && !this._drag.moved) this._drag = null;
     // Keep the rows being edited or saved; otherwise take the day afresh.
     if (!this._inflight && !(this._rows && this._rows.some((r) => r.dirty))) this._rows = null;
     this._render();
@@ -272,12 +270,21 @@ class ProtoNestScheduleCard extends HTMLElement {
     else if (service === "schedule_update") list = list.map((e) => (at(e) ? { ...e, ...values, time: to || time } : e));
     else if (service === "schedule_remove") list = list.filter((e) => !at(e));
     this._sent[kind] = { entries: list, at: Date.now() };
+    this._expire();
   }
 
   async _setSensorEntries(list) {
     const entries = list.map((e) => ({ day: e.day, time: e.time, sensors: e.sensors }));
     await this._hass.callService("protonest", "set_sensor_schedule", { entries }, { entity_id: this._config.entity });
     this._sent[SENSORS] = { entries, at: Date.now() };
+    this._expire();
+  }
+
+  // If the stored schedule never quite matches what was sent (rounding), show it when that's let go.
+  _expire() {
+    clearTimeout(this._expiry);
+    this._expiry = setTimeout(() => this._render(), 20 * 1000 + 100);
+    if (this._expiry.unref) this._expiry.unref(); // (Node, in tests)
   }
 
   // Saves run one after another, so each builds on what the last one saved.
@@ -506,6 +513,9 @@ class ProtoNestScheduleCard extends HTMLElement {
     this._rows = kinds.flatMap((kind) =>
       this._entries(kind, this._open).map((e) => ({ kind, orig: e.time, time: e.time, ...this._values(e, kind), dirty: false }))
     );
+    // A sensor picker that was open stays open on the same entry.
+    const was = this._expanded;
+    if (was) this._expanded = this._rows.find((r) => r.kind === was.kind && r.orig !== null && r.orig === was.orig) || null;
   }
 
   _addRow(kind) {
@@ -748,7 +758,13 @@ class ProtoNestScheduleCard extends HTMLElement {
     const d = this._drag;
     if (!d || ev.pointerId !== d.id || ev.currentTarget && ev.currentTarget !== d.el) return;
     this._drag = null;
-    if (!d.moved) return; // a tap: the click opens the entry
+    const redraw = this._redraw;
+    this._redraw = false;
+    if (!d.moved) {
+      // A tap: the click that follows opens the entry, on this element, so redraw after it.
+      if (redraw) setTimeout(() => this._render(), 0);
+      return;
+    }
     this._dragged = true; // swallow the click that follows the drop
     setTimeout(() => (this._dragged = false), 0);
     if (cancelled || d.to === d.at) {
@@ -761,9 +777,10 @@ class ProtoNestScheduleCard extends HTMLElement {
       // The whole sensor schedule, as shown when it's sent (this move and any before it).
       save = () => this._setSensorEntries(this._entries(SENSORS));
     } else {
-      // Its values as they are when sent, after any save queued before it (the entry shows at its new time).
+      // Its values as they are when sent, after any save queued before it; not with later
+      // drops applied, which a second quick drag of the same entry would be.
       save = () => {
-        const entry = this._entries(d.kind, d.day).find((e) => e.time === time);
+        const entry = this._stored(d.kind).find((e) => e.day === d.day && e.time === d.time);
         if (!entry) throw new Error("That entry changed before it could be moved.");
         return this._call(d.kind, "schedule_update", { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) });
       };
@@ -780,15 +797,14 @@ class ProtoNestScheduleCard extends HTMLElement {
       this._render();
     }, 20 * 1000);
     this._moves.push(move);
-    // The open day's editor follows the entry to its new time.
-    const row = this._open === d.day && this._rows && this._rows.find((r) => r.kind === d.kind && r.orig === d.time);
     this._queue(async () => {
       try {
         await save();
-      } catch (err) {
-        forget();
-        throw err;
+      } finally {
+        forget(); // saved: what was sent shows it now; failed: back to what's stored
       }
+      // The open day's editor follows the entry to its new time.
+      const row = this._open === d.day && this._rows && this._rows.find((r) => r.kind === d.kind && r.orig === d.time);
       if (row) Object.assign(row, { orig: time, time, timeText: null });
     });
     this._render();
@@ -958,7 +974,12 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot || !this._config) return;
-    if (this._drag && this._drag.moved) return; // redrawn on the drop
+    // Not under a pressed chip or handle: that would cancel the drag (the thermostat's
+    // confirmation of a save often lands just as the next drag starts). Redrawn on release.
+    if (this._drag) {
+      this._redraw = true;
+      return;
+    }
     const s = this._state;
     const title = this._config.title || (s && s.attributes.friendly_name) || this._config.entity;
     let body;

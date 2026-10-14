@@ -112,3 +112,28 @@ def test_fixture_names_resolve(capture):
         THERMOSTAT1_NAME, THERMOSTAT3_NAME, THERMOSTAT2_NAME,
         ROOM5_NAME, ROOM3_NAME, ROOM2_NAME, ROOM4_NAME, ROOM1_NAME,
     }
+
+
+def test_late_confirmation_of_an_earlier_write_does_not_show_it_again():
+    """Seen live (2026-10-14): two quick writes; the device's confirmation of the
+    first came with a newer version than the server's acceptance of the second."""
+    cache = TraitCache()
+    label = "target_temperature_settings"
+    cache.apply_frame(frame(state(heat(18), 1, CONFIRMED)))
+    cache.apply_frame(frame(state(heat(19), 10, ACCEPTED)))  # write 1
+    cache.apply_frame(frame(state(heat(20), 11, ACCEPTED)))  # write 2
+    cache.apply_frame(frame(state(heat(19), 12, CONFIRMED)))  # write 1 confirmed, late
+    assert cache.latest(DEVICE, label).message == heat(20)
+    cache.apply_frame(frame(state(heat(20), 13, CONFIRMED)))  # write 2 confirmed
+    assert cache.latest(DEVICE, label).message == heat(20)
+    # caught up: a later change made on the device shows, even if it matches an old write
+    cache.apply_frame(frame(state(heat(19), 14, CONFIRMED)))
+    assert cache.latest(DEVICE, label).message == heat(19)
+
+
+def test_a_confirmed_value_none_of_ours_shows():
+    cache = TraitCache()
+    label = "target_temperature_settings"
+    cache.apply_frame(frame(state(heat(19), 10, ACCEPTED)))
+    cache.apply_frame(frame(state(heat(17), 12, CONFIRMED)))  # set on the device
+    assert cache.latest(DEVICE, label).message == heat(17)

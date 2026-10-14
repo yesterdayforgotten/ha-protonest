@@ -138,6 +138,8 @@ class TraitCache:
     def __init__(self) -> None:
         self.resource_types: dict[str, str] = {}
         self._traits: dict[tuple[str, str, int], TraitValue] = {}
+        # ACCEPTED values not yet confirmed, oldest first, per (resource, label): see latest().
+        self._unconfirmed: dict[tuple[str, str], list[pb_message.Message]] = {}
 
     def apply_frame(self, frame: codec.ObserveFrame) -> list[TraitChange]:
         """Apply one Observe frame; return the trait values that changed."""
@@ -161,6 +163,14 @@ class TraitCache:
                 if old is not None and new.version <= old.version:
                     continue  # stale or duplicate
                 self._traits[key] = new
+                pair = (rid, label)
+                if state_type == ACCEPTED:
+                    self._unconfirmed.setdefault(pair, []).append(new.message)
+                    del self._unconfirmed[pair][:-16]
+                else:
+                    accepted = self._traits.get((rid, label, ACCEPTED))
+                    if accepted is not None and accepted.message == new.message:
+                        self._unconfirmed.pop(pair, None)  # caught up
                 if old is None or old.message != new.message:
                     changes.append(TraitChange(rid, label, state_type, old, new))
         return changes
@@ -169,6 +179,8 @@ class TraitCache:
         self.resource_types.pop(resource_id, None)
         for key in [k for k in self._traits if k[0] == resource_id]:
             del self._traits[key]
+        for pair in [k for k in self._unconfirmed if k[0] == resource_id]:
+            del self._unconfirmed[pair]
 
     def get(
         self, resource_id: str, label: str, state_type: int = CONFIRMED
@@ -183,10 +195,19 @@ class TraitCache:
         change is newer than the CONFIRMED value, and building on the
         CONFIRMED one would undo it.
         """
-        values = [
-            v for k in (CONFIRMED, ACCEPTED)
-            if (v := self._traits.get((resource_id, label, k))) is not None
-        ]
+        confirmed = self._traits.get((resource_id, label, CONFIRMED))
+        accepted = self._traits.get((resource_id, label, ACCEPTED))
+        # After quick writes, the device's confirmation of an earlier one can carry a
+        # newer version than the server's acceptance of the last one: it is older all
+        # the same. Seen live (2026-10-14) as a schedule flicking back for a moment.
+        if (
+            confirmed is not None and accepted is not None
+            and confirmed.version > accepted.version
+            and confirmed.message != accepted.message
+            and any(confirmed.message == m for m in self._unconfirmed.get((resource_id, label), ()))
+        ):
+            return accepted
+        values = [v for v in (confirmed, accepted) if v is not None]
         return max(values, key=lambda v: v.version, default=None)
 
     def user_resource_id(self) -> str | None:

@@ -210,7 +210,7 @@ async def test_unconfirmed_write_makes_device_unresponsive_until_it_confirms(ses
     assert not client.responsive(THERMOSTAT1)
     assert [] in woken  # listeners were woken to re-evaluate
     assert client.responsive(THERMOSTAT2)  # other thermostats unaffected
-    sent = client._pending[(THERMOSTAT1, TARGET)].message
+    sent = client._pending[(THERMOSTAT1, TARGET)][-1].message
     await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, sent, 9_999_999_999_999_990))
     await asyncio.sleep(0.2)
     assert client.responsive(THERMOSTAT1)
@@ -222,7 +222,7 @@ async def test_confirmed_as_sent_is_not_an_override(session, gateway):
     overrides = []
     client.add_override_listener(lambda rid, label: overrides.append((rid, label)))
     await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=24.0))
-    sent = client._pending[(THERMOSTAT1, TARGET)].message
+    sent = client._pending[(THERMOSTAT1, TARGET)][-1].message
     await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, sent, 9_999_999_999_999_990))
     await asyncio.sleep(0.2)
     assert overrides == []
@@ -236,7 +236,7 @@ async def test_local_value_replacing_ours_is_reported(session, gateway):
     overrides = []
     client.add_override_listener(lambda rid, label: overrides.append((rid, label)))
     await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=24.0))
-    sent = client._pending[(THERMOSTAT1, TARGET)].message
+    sent = client._pending[(THERMOSTAT1, TARGET)][-1].message
     local = type(sent)()
     local.CopyFrom(sent)
     local.targetTemperature.coolingTarget.value = 24.575394
@@ -245,6 +245,25 @@ async def test_local_value_replacing_ours_is_reported(session, gateway):
     await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, local, 9_999_999_999_999_991))
     await asyncio.sleep(0.2)
     assert overrides == [(THERMOSTAT1, TARGET)]
+    await client.async_stop()
+
+
+async def test_quick_writes_confirmed_in_turn_are_not_overrides(session, gateway):
+    """The schedule card saves edits as they're made: two writes to one trait go out
+    before the first is confirmed, and each confirmation matches its own write."""
+    client = await ready_client(session, gateway)
+    overrides = []
+    client.add_override_listener(lambda rid, label: overrides.append((rid, label)))
+    await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=24.0))
+    await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(heat=18.0))
+    first, second = (s.message for s in client._pending[(THERMOSTAT1, TARGET)])
+    await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, first, 9_999_999_999_999_990))
+    await asyncio.sleep(0.2)
+    assert client._pending[(THERMOSTAT1, TARGET)][0].message == second  # still waiting for it
+    await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, second, 9_999_999_999_999_991))
+    await asyncio.sleep(0.2)
+    assert overrides == []
+    assert (THERMOSTAT1, TARGET) not in client._pending
     await client.async_stop()
 
 
@@ -287,13 +306,29 @@ async def test_concurrent_writes_to_one_trait_both_apply(session, gateway):
     await client.async_stop()
 
 
+async def test_earlier_write_echoed_late_does_not_undo_a_later_one(session, gateway):
+    """Seen live (2026-10-14, schedule card saving as edits are made): the stream
+    confirmed the first of two quick writes after the second was sent. A third write
+    built on that confirmation sent the second one's old value back."""
+    client = await ready_client(session, gateway)
+    await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=24.0))
+    first = client._pending[(THERMOSTAT1, TARGET)][-1].message
+    await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(heat=18.0))
+    await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, first, 9_999_999_999_999_990))
+    await asyncio.sleep(0.2)
+    await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=25.0))
+    last = sent_targets(gateway)[-1]
+    assert (last.coolingTarget.value, last.heatingTarget.value) == (25.0, 18.0)
+    await client.async_stop()
+
+
 async def test_writes_build_on_the_stream_once_it_moves_on(session, gateway):
     """A newer value from the stream (here a change made on the thermostat)
     replaces the remembered sent value as the base."""
     client = await ready_client(session, gateway)
     await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=24.0))
-    local = type(client._pending[(THERMOSTAT1, TARGET)].message)()
-    local.CopyFrom(client._pending[(THERMOSTAT1, TARGET)].message)
+    local = type(client._pending[(THERMOSTAT1, TARGET)][-1].message)()
+    local.CopyFrom(client._pending[(THERMOSTAT1, TARGET)][-1].message)
     local.targetTemperature.coolingTarget.value = 25.0
     await gateway.pushes.put(confirm(THERMOSTAT1, TARGET, local, 9_999_999_999_999_990))
     await asyncio.sleep(0.2)

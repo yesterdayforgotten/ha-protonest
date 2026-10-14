@@ -93,17 +93,21 @@ class NestClient:
         self._frames_this_stream = 0
         self.status = ConnectionStatus()
         self._unresponsive_after = unresponsive_after
-        self._pending: dict[tuple[str, str], _Sent] = {}
+        # Writes not yet confirmed, oldest first: quick writes to one trait each get confirmed in turn.
+        self._pending: dict[tuple[str, str], list[_Sent]] = {}
         self._recent: dict[tuple[str, str], _Sent] = {}
         self._last_confirmed: dict[str, float] = {}
         self._override_listeners: list[OverrideListener] = []
         self._timers: list[asyncio.TimerHandle] = []
         self._auth_failed_event = asyncio.Event()
         # Writes replace a whole trait, built from the newest value we know. Until
-        # the stream echoes a write (~0.5 s), the newest value is the one we sent:
-        # (cache version it was built on, message sent).
+        # the stream shows the last write, the newest value is the one we sent.
+        # The stream may first show an earlier write of ours (its ACCEPTED or
+        # CONFIRMED state), which is older: only a value that is none of ours (a
+        # change made elsewhere) means the stream has moved on. Per trait:
+        # (values that are ours: the one first built on, then each sent, last sent).
         self._write_locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._unechoed: dict[tuple[str, str], tuple[int | None, pb_message.Message]] = {}
+        self._unechoed: dict[tuple[str, str], tuple[list[pb_message.Message], pb_message.Message]] = {}
 
     # --- listeners ---------------------------------------------------------------
 
@@ -120,7 +124,8 @@ class NestClient:
         """False if the device left a change unconfirmed too long, or Nest reports it offline."""
         now = time.monotonic()
         last = self._last_confirmed.get(resource_id, float("-inf"))
-        for (rid, _), sent in self._pending.items():
+        for (rid, _), sents in self._pending.items():
+            sent = sents[0]
             if rid == resource_id and now - sent.at >= self._unresponsive_after and last < sent.at:
                 return False
         return Device(self.cache, resource_id).online is not False
@@ -228,12 +233,16 @@ class NestClient:
                 continue
             key = (change.resource_id, change.label)
             self._last_confirmed[change.resource_id] = now
-            sent = self._pending.pop(key, None)
-            if sent is not None:
-                if change.new.message != sent.message:
+            sents = self._pending.pop(key, None)
+            if sents:
+                # One of ours, maybe not the last yet; anything else replaced them.
+                hit = next((i for i, sent in enumerate(sents) if change.new.message == sent.message), None)
+                if hit is None:
                     self._overridden(key)
+                elif hit + 1 < len(sents):
+                    self._pending[key] = sents[hit + 1:]
                 else:
-                    self._recent[key] = _Sent(sent.message, now)
+                    self._recent[key] = _Sent(sents[hit].message, now)
                 continue
             recent = self._recent.pop(key, None)
             if recent is not None and now - recent.at <= OVERRIDE_WINDOW and change.new.message != recent.message:
@@ -278,11 +287,19 @@ class NestClient:
         key = (resource_id, label)
         async with self._write_locks.setdefault(key, asyncio.Lock()):
             current = self.cache.latest(resource_id, label)
-            version = current.version if current is not None else None
+            now_shown = current.message if current is not None else None
             unechoed = self._unechoed.get(key)
-            base = unechoed[1] if unechoed is not None and unechoed[0] == version else None
-            if base is None:
-                self._unechoed.pop(key, None)  # the stream has caught up
+            base = None
+            if unechoed is not None:
+                ours, last = unechoed
+                if now_shown is not None and now_shown == last:
+                    unechoed = None  # the stream has caught up
+                elif any(now_shown == m for m in ours):
+                    base = last  # the stream is still on our own earlier values
+                else:
+                    unechoed = None  # changed elsewhere: build on that
+            if unechoed is None:
+                self._unechoed.pop(key, None)
             prepared = prepare_update(self.cache, resource_id, label, mutate, base=base)
             if check is not None:
                 check(prepared.new)
@@ -292,8 +309,9 @@ class NestClient:
                 self._auth_failed(str(err))
                 raise
             if op is not None:
-                self._unechoed[key] = (version, prepared.new)
-                self._pending[key] = _Sent(prepared.new, time.monotonic())
+                ours = unechoed[0] if unechoed is not None else ([now_shown] if now_shown is not None else [])
+                self._unechoed[key] = ([*ours, prepared.new], prepared.new)
+                self._pending.setdefault(key, []).append(_Sent(prepared.new, time.monotonic()))
                 self._recent.pop(key, None)
                 # Re-check once the confirmation deadline has passed.
                 loop = asyncio.get_running_loop()
