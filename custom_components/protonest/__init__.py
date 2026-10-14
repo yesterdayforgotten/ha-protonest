@@ -5,13 +5,23 @@ from __future__ import annotations
 import aiohttp
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_COOKIES, PLATFORMS
+from .const import CONF_COOKIES, DOMAIN, PLATFORMS
+from .icons import async_register_icons
 from .coordinator import ProtoNestConfigEntry, ProtoNestCoordinator, credentials_from
 from .pynestproto import codec
 from .pynestproto.auth import CredentialsRejected, GoogleCredentials
 from .pynestproto.client import NestClient
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    await async_register_icons(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry) -> bool:

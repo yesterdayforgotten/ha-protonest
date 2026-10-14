@@ -65,7 +65,7 @@ REMOTE_SENSORS: tuple[ProtoNestSensorDescription, ...] = (
     ProtoNestSensorDescription(
         key="temperature", name="Temperature", device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS, state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1, value=lambda s: s.temperature),
+        suggested_display_precision=1, icon="protonest:sensor", value=lambda s: s.temperature),
     ProtoNestSensorDescription(
         key="battery_voltage", name="Battery voltage", device_class=SensorDeviceClass.VOLTAGE,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT, entity_category=EntityCategory.DIAGNOSTIC,

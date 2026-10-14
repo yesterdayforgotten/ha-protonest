@@ -106,6 +106,7 @@ def climate_name(device_name: str | None) -> str | None:
 
 
 class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
+    _attr_icon = "protonest:thermostat"  # frontend/protonest-icons.js
     _attr_preset_modes = [PRESET_NONE, PRESET_ECO]
     _attr_fan_modes = [FAN_AUTO, FAN_ON]
 

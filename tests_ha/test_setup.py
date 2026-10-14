@@ -56,7 +56,9 @@ async def test_setup_creates_devices_and_climate(hass, fake_client):
         assert set(st.attributes["hvac_modes"]) == {"off", "heat", "cool", "heat_cool"}
         assert st.attributes["preset_modes"] == ["none", "eco"]
         assert 50 <= st.attributes["temperature"] <= 90  # °F
-    assert hass.states.get(sensor_entity(ROOM4_NAME, "temperature")) is not None
+        assert st.attributes["icon"] == "protonest:thermostat"
+    assert hass.states.get(sensor_entity(ROOM4_NAME, "temperature")).attributes["icon"] == "protonest:sensor"
+    assert "icon" not in hass.states.get(sensor_entity(THERMOSTAT1_NAME, "temperature")).attributes
     assert hass.states.get(sensor_entity(ROOM1_NAME, "battery_voltage")) is not None
 
 

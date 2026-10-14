@@ -71,6 +71,9 @@ For each thermostat:
 
 For each temperature sensor: temperature and battery voltage.
 
+Thermostats and temperature sensors get Nest-style icons (`protonest:thermostat`,
+`protonest:sensor`), which you can also choose for other entities in the icon picker.
+
 ### Actions
 
 On a thermostat's climate entity:

@@ -1,6 +1,10 @@
 {
   "domain": "protonest",
   "name": "ProtoNest",
+  "after_dependencies": [
+    "frontend",
+    "http"
+  ],
   "codeowners": [
     "@yesterdayforgotten"
   ],
@@ -17,5 +21,5 @@
     "protobuf>=6.31.1",
     "googleapis-common-protos>=1.60.0"
   ],
-  "version": "0.1.1"
+  "version": "0.1.2"
 }
