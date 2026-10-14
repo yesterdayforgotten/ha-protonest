@@ -83,9 +83,14 @@ class ProtoNestScheduleCard extends HTMLElement {
     });
     // What was saved is now stored (or something else changed it): show the stored schedule.
     for (const kind of Object.keys(this._sent)) {
-      const keys = (list) => JSON.stringify(list.map((e) => `${e.day} ${e.time}`).sort());
+      // All of it, values too: an older save's echo can match on times alone.
+      const num = (v) => (v === null || v === undefined ? "" : Number(v).toFixed(1));
+      const one = (e) => kind === SENSORS
+        ? `${e.day} ${e.time} ${[...e.sensors].sort().join(",")}`
+        : `${e.day} ${e.time} ${num(e.temperature)} ${num(e.target_temp_low)} ${num(e.target_temp_high)}`;
+      const all = (list) => JSON.stringify(list.map(one).sort());
       const stored = kind === SENSORS ? (this._sensorSchedule && this._sensorSchedule.entries) || [] : (this._schedule && this._schedule[kind]) || [];
-      if (keys(stored) === keys(this._sent[kind].entries)) delete this._sent[kind];
+      if (all(stored) === all(this._sent[kind].entries)) delete this._sent[kind];
     }
     // A drag that hasn't moved yet holds an element this redraw is about to replace.
     if (this._drag && !this._drag.moved) this._drag = null;
@@ -495,7 +500,8 @@ class ProtoNestScheduleCard extends HTMLElement {
   }
 
   _ensureRows() {
-    if (this._rows || !this._open) return;
+    // Not while saves are queued: the rows would start from the schedule before them.
+    if (this._rows || !this._open || this._inflight) return;
     const kinds = [this._tempKind, ...(this._hasSensors ? [SENSORS] : [])];
     this._rows = kinds.flatMap((kind) =>
       this._entries(kind, this._open).map((e) => ({ kind, orig: e.time, time: e.time, ...this._values(e, kind), dirty: false }))
@@ -755,9 +761,12 @@ class ProtoNestScheduleCard extends HTMLElement {
       // The whole sensor schedule, as shown when it's sent (this move and any before it).
       save = () => this._setSensorEntries(this._entries(SENSORS));
     } else {
-      const entry = this._entries(d.kind, d.day).find((e) => e.time === d.time);
-      const data = { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) };
-      save = () => this._call(d.kind, "schedule_update", data);
+      // Its values as they are when sent, after any save queued before it (the entry shows at its new time).
+      save = () => {
+        const entry = this._entries(d.kind, d.day).find((e) => e.time === time);
+        if (!entry) throw new Error("That entry changed before it could be moved.");
+        return this._call(d.kind, "schedule_update", { day: d.day, time: d.time, new_time: time, ...this._values(entry, d.kind) });
+      };
     }
     const move = { kind: d.kind, day: d.day, from: d.time, to: time };
     const forget = () => {
@@ -854,6 +863,13 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   _editor() {
     this._ensureRows();
+    if (!this._rows) {
+      return `
+      <div class="editor">
+        <div class="editor-head"><span>Editing ${DAY_FULL[this._open]}</span><span class="status">Saving…</span><button class="text" data-act="close" title="Close (Esc)">Close</button></div>
+        <div class="editor-body"><div class="empty">Saving…</div></div>
+      </div>`;
+    }
     if (this._focus) {
       const { kind, time } = this._focus;
       this._rows.forEach((r) => {
@@ -991,7 +1007,9 @@ class ProtoNestScheduleCard extends HTMLElement {
       } catch (err) {
         sel = null; // number fields have no cursor
       }
-      if (what) keep = { what: what + extra, row: i !== undefined && this._rows ? this._rows[Number(i)] : null, sel, list: !!this.shadowRoot.querySelector(".times") };
+      // The rows drawn last time: set hass may have just let go of them, to rebuild.
+      const drawn = this._drawnRows || [];
+      if (what) keep = { what: what + extra, inRow: i !== undefined, row: i !== undefined ? drawn[Number(i)] : null, sel, list: !!this.shadowRoot.querySelector(".times") };
     }
     this._rendering = true;
     // The frame is made once: a new ha-card shows its contents only after it has drawn
@@ -1003,14 +1021,18 @@ class ProtoNestScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector("ha-card > .body").innerHTML = body;
     this._rendering = false;
     this._wire();
+    this._drawnRows = this._rows;
     if (keep) {
       let at = "";
-      if (keep.row && this._rows) {
-        let i = this._rows.indexOf(keep.row);
-        if (i < 0) i = this._rows.findIndex((r) => r.kind === keep.row.kind && r.orig === keep.row.orig);
-        at = keep.what === "select" ? `[data-pick-time="${i}"]` : `[data-i="${i}"]`;
+      if (keep.inRow) {
+        // The same entry, found by what it is, never another row in its place.
+        let i = keep.row && this._rows ? this._rows.indexOf(keep.row) : -1;
+        if (i < 0 && keep.row && keep.row.orig !== null && this._rows) {
+          i = this._rows.findIndex((r) => r.kind === keep.row.kind && r.orig === keep.row.orig);
+        }
+        at = i < 0 ? null : keep.what === "select" ? `[data-pick-time="${i}"]` : `[data-i="${i}"]`;
       }
-      const el = this.shadowRoot.querySelector(keep.what + at);
+      const el = at === null ? null : this.shadowRoot.querySelector(keep.what + at);
       if (el) {
         el.focus();
         if (!keep.list) this._closeTimes(el);
@@ -1081,11 +1103,14 @@ class ProtoNestScheduleCard extends HTMLElement {
       input.addEventListener("input", () => this._readField(input));
       if (input.dataset.field !== "time") {
         // A temperature is entered when it's left, or Enter or a spinner arrow is pressed.
-        input.addEventListener("change", () => {
+        const save = () => {
           if (this._rendering) return;
           this._readField(input);
-          this._commit(this._rows[Number(input.dataset.i)]);
-        });
+          this._commit(this._rows && this._rows[Number(input.dataset.i)]);
+        };
+        input.addEventListener("change", save);
+        // Also on leaving it: a redraw while typing resets what "change" compares with.
+        input.addEventListener("blur", save);
       }
       // Leaving a time field rounds it to the quarter hour and shows it in HA's format.
       if (input.dataset.field === "time") {
