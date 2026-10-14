@@ -107,6 +107,7 @@ def climate_name(device_name: str | None) -> str | None:
 
 class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
     _attr_icon = "protonest:thermostat"  # frontend/protonest-icons.js
+    _unrecorded_attributes = frozenset({"schedule"})  # large and rarely changes
     _attr_preset_modes = [PRESET_NONE, PRESET_ECO]
     _attr_fan_modes = [FAN_AUTO, FAN_ON]
 
@@ -221,7 +222,26 @@ class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
             "eco_cool_limit": self._native(t.threshold("eco_cool")[1]),
             "fan_timer_end": t.fan_timer_end,
             "compressor_lockout_until": t.compressor_lockout_until,
+            "schedule": self._schedule_attribute(),
         }
+
+    def _schedule_attribute(self) -> dict[str, Any]:
+        """The weekly schedules in the thermostat's display units, for the
+        schedule card: {"unit": "°F", "heat": [{"day": "mon", "time": "07:00",
+        "temperature": 68}], "cool": [...], "range": [{..., "target_temp_low":
+        66, "target_temp_high": 74}]}."""
+        out: dict[str, Any] = {"unit": self.temperature_unit}
+        for kind in SCHEDULE_LABELS:
+            entries = []
+            for day, seconds, heat, cool in self.device.schedule(kind):
+                entry = {"day": day, "time": f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}"}
+                if kind == "range":
+                    entry |= {"target_temp_low": self._native(heat), "target_temp_high": self._native(cool)}
+                else:
+                    entry["temperature"] = self._native(heat if kind == "heat" else cool)
+                entries.append(entry)
+            out[kind] = entries
+        return out
 
     # --- actions ------------------------------------------------------------------------
 

@@ -74,6 +74,21 @@ For each temperature sensor: temperature and battery voltage.
 Thermostats and temperature sensors get Nest-style icons (`protonest:thermostat`,
 `protonest:sensor`), which you can also choose for other entities in the icon picker.
 
+### Schedule card
+
+ProtoNest includes a card for viewing and editing a thermostat's weekly schedule,
+like the Nest app. Add it from the card picker ("ProtoNest schedule") or in YAML:
+
+```yaml
+type: custom:protonest-schedule-card
+entity: climate.living_room_thermostat
+# schedule: heat   # optional: heat, cool or range; default follows the thermostat's mode
+```
+
+Tap a day to change times and temperatures, delete or add entries, or copy that
+day to others. Changes save straight to the thermostat. After updating ProtoNest,
+refresh the browser (Ctrl+Shift+R) so it loads the new card.
+
 ### Actions
 
 On a thermostat's climate entity:

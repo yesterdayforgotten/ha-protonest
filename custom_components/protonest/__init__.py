@@ -10,7 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_COOKIES, DOMAIN, PLATFORMS
-from .icons import async_register_icons
+from .web import async_register_frontend
 from .coordinator import ProtoNestConfigEntry, ProtoNestCoordinator, credentials_from
 from .pynestproto import codec
 from .pynestproto.auth import CredentialsRejected, GoogleCredentials
@@ -20,7 +20,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    await async_register_icons(hass)
+    await async_register_frontend(hass)
     return True
 
 

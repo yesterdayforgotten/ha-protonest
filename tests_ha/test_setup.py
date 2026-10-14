@@ -158,6 +158,22 @@ async def test_switch_number_select_button(hass, fake_client):
     assert changed.date() == dt_util.now().date()
 
 
+async def test_schedule_attribute(hass, fake_client):
+    _, client = await setup(hass, fake_client)
+    sched = hass.states.get(f"climate.{T1}_thermostat").attributes["schedule"]
+    assert sched["unit"] == "°F" and set(sched) == {"unit", "heat", "cool", "range"}
+    entries = [e for kind in ("heat", "cool", "range") for e in sched[kind]]
+    assert entries, "the snapshot has schedule entries"
+    for e in sched["cool"]:
+        assert e["day"] in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+        assert len(e["time"]) == 5 and 50 <= e["temperature"] <= 90
+    for e in sched["range"]:
+        assert e["target_temp_low"] < e["target_temp_high"]
+    await call(hass, DOMAIN, "schedule_add", f"climate.{T1}_thermostat", schedule="cool", day="mon", time="12:45:00", temperature=82)
+    sched = hass.states.get(f"climate.{T1}_thermostat").attributes["schedule"]
+    assert {"day": "mon", "time": "12:45", "temperature": 82} in sched["cool"]
+
+
 async def test_actions(hass, fake_client):
     _, client = await setup(hass, fake_client)
     await call(hass, DOMAIN, "run_fan", f"climate.{T2}_thermostat", duration={"minutes": 45})
