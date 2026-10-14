@@ -146,6 +146,16 @@
           "description": "The entry's time."
         }
       }
+    },
+    "set_sensor_schedule": {
+      "name": "Set target sensor schedule",
+      "description": "Replace the thermostat's Home Assistant target sensor schedule. Turn it on with its Target sensor schedule switch.",
+      "fields": {
+        "entries": {
+          "name": "Entries",
+          "description": "List of entries, each with a day, a time and sensors: from that time on, control to these sensors. sensors is [thermostat] for the thermostat's own sensor, one temperature sensor entity, or two or more to average. An empty list clears the schedule."
+        }
+      }
     }
   }
 }

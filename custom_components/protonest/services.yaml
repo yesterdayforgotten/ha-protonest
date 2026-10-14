@@ -112,3 +112,17 @@ schedule_remove:
     schedule: *schedule
     day: *day
     time: *time
+
+set_sensor_schedule:
+  target:
+    entity:
+      integration: protonest
+      domain: climate
+  fields:
+    entries:
+      required: true
+      example: >-
+        [{"day": "mon", "time": "07:00", "sensors": ["sensor.kitchen_temperature"]},
+         {"day": "mon", "time": "22:00", "sensors": ["sensor.den_temperature", "sensor.hallway_temperature"]}]
+      selector:
+        object:

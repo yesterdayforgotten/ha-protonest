@@ -25,6 +25,7 @@ from .pynestproto.write import (
 )
 
 PARALLEL_UPDATES = 0
+SENSOR_SCHEDULE_KEY = "target_sensor_schedule"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -93,7 +94,8 @@ SWITCHES: tuple[ProtoNestSwitchDescription, ...] = (
 async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry, async_add_entities) -> None:
     c = entry.runtime_data
     async_add_entities(
-        ProtoNestSwitch(c, t, d) for t in thermostats(c.client.cache) for d in SWITCHES if d.exists(t)
+        [ProtoNestSwitch(c, t, d) for t in thermostats(c.client.cache) for d in SWITCHES if d.exists(t)]
+        + [SensorScheduleSwitch(c, t) for t in thermostats(c.client.cache)]
     )
 
 
@@ -117,3 +119,27 @@ class ProtoNestSwitch(ProtoNestEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         d = self.entity_description
         await self.write(d.label, d.set(self.device, False))
+
+
+class SensorScheduleSwitch(ProtoNestEntity, SwitchEntity):
+    """Runs this thermostat's Home Assistant target sensor schedule (sensor_schedule.py)."""
+
+    _attr_name = "Target sensor schedule"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator, thermostat) -> None:
+        super().__init__(coordinator, thermostat, SENSOR_SCHEDULE_KEY)
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.sensor_schedule.enabled(self.resource_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"entries": len(self.coordinator.sensor_schedule.entries(self.resource_id))}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.sensor_schedule.async_set_enabled(self.resource_id, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.sensor_schedule.async_set_enabled(self.resource_id, False)

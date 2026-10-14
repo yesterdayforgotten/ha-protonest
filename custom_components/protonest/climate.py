@@ -24,7 +24,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv, entity_platform, entity_registry as er
 
+from .const import DOMAIN
 from .coordinator import ProtoNestConfigEntry
+from .sensor_schedule import Entry, validate
+from .switch import SENSOR_SCHEDULE_KEY
 from .entity import ProtoNestEntity, validation_errors
 from .pynestproto.model import SENSOR_TYPE, thermostats
 from .pynestproto.write import (
@@ -34,6 +37,7 @@ from .pynestproto.write import (
     SCHEDULE_LABELS,
     SCHEDULE_MAX_F,
     SCHEDULE_MIN_F,
+    THERMOSTAT_SENSOR,
     DAYS,
     add_schedule_entry,
     check_target_temperature,
@@ -65,6 +69,11 @@ _DEFAULT_FAN_RUN = 3600
 
 _SCHEDULE = vol.In(list(SCHEDULE_LABELS))
 _DAY = vol.In(list(DAYS))
+_SENSOR_ENTRY = vol.Schema({
+    vol.Required("day"): _DAY,
+    vol.Required("time"): cv.time,
+    vol.Required("sensors"): vol.All(cv.ensure_list, [cv.string], vol.Length(min=1)),
+})
 _TEMPS = {
     vol.Optional("temperature"): vol.Coerce(float),
     vol.Optional("target_temp_low"): vol.Coerce(float),
@@ -93,6 +102,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry, as
          vol.Optional("new_day"): _DAY, vol.Optional("new_time"): cv.time, **_TEMPS},
         "async_schedule_update")
     platform.async_register_entity_service(
+        "set_sensor_schedule", {vol.Required("entries"): vol.All(cv.ensure_list, [_SENSOR_ENTRY])},
+        "async_set_sensor_schedule")
+    platform.async_register_entity_service(
         "schedule_remove",
         {vol.Required("schedule"): _SCHEDULE, vol.Required("day"): _DAY, vol.Required("time"): cv.time},
         "async_schedule_remove")
@@ -107,7 +119,7 @@ def climate_name(device_name: str | None) -> str | None:
 
 class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
     _attr_icon = "protonest:thermostat"  # frontend/protonest-icons.js
-    _unrecorded_attributes = frozenset({"schedule"})  # large and rarely changes
+    _unrecorded_attributes = frozenset({"schedule", "sensor_schedule"})  # large and rarely change
     _attr_preset_modes = [PRESET_NONE, PRESET_ECO]
     _attr_fan_modes = [FAN_AUTO, FAN_ON]
 
@@ -223,6 +235,30 @@ class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
             "fan_timer_end": t.fan_timer_end,
             "compressor_lockout_until": t.compressor_lockout_until,
             "schedule": self._schedule_attribute(),
+            "sensor_schedule": self._sensor_schedule_attribute(),
+        }
+
+    def _sensor_schedule_attribute(self) -> dict[str, Any]:
+        """The Home Assistant target sensor schedule, for the schedule card. Sensors
+        are named by their temperature entity ("thermostat" for the thermostat's
+        own), as the set_sensor_schedule action takes them."""
+        registry = er.async_get(self.hass)
+        entity = lambda domain, rid, key: registry.async_get_entity_id(domain, DOMAIN, f"{rid}-{key}")  # noqa: E731
+        cache = self.coordinator.client.cache
+        options = [{"id": THERMOSTAT_SENSOR, "name": "Thermostat",
+                    "entity_id": entity("sensor", self.resource_id, "backplate_temperature")}]
+        ids = {THERMOSTAT_SENSOR: THERMOSTAT_SENSOR}
+        for sid in self.device.paired_sensors:
+            if (eid := entity("sensor", sid, "temperature")) is not None:
+                ids[sid] = eid
+                options.append({"id": eid, "name": cache.display_name(sid), "entity_id": eid})
+        scheduler = self.coordinator.sensor_schedule
+        return {
+            "enabled": scheduler.enabled(self.resource_id),
+            "switch": entity("switch", self.resource_id, SENSOR_SCHEDULE_KEY),
+            "options": options,
+            "entries": [{**e.as_dict(), "sensors": [ids.get(x, x) for x in e.sensors]}
+                        for e in scheduler.entries(self.resource_id)],
         }
 
     def _schedule_attribute(self) -> dict[str, Any]:
@@ -366,6 +402,14 @@ class ProtoNestClimate(ProtoNestEntity, ClimateEntity):
             schedule, day, time.hour * 3600 + time.minute * 60, new_day=kwargs.get("new_day"),
             new_seconds=new_time.hour * 3600 + new_time.minute * 60 if new_time else None,
             heat=heat, cool=cool, user=self.user))
+
+    @validation_errors
+    async def async_set_sensor_schedule(self, entries: list[dict[str, Any]]) -> None:
+        resource = lambda s: s if s == THERMOSTAT_SENSOR else self._sensor_resource(s)  # noqa: E731
+        schedule = [Entry(e["day"], e["time"].hour * 60 + e["time"].minute, tuple(resource(s) for s in e["sensors"]))
+                    for e in entries]
+        await self.coordinator.sensor_schedule.async_set_entries(
+            self.resource_id, validate(schedule, self.device.paired_sensors))
 
     @validation_errors
     async def async_schedule_remove(self, schedule: str, day: str, time: dtime) -> None:

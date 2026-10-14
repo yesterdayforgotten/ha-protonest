@@ -89,6 +89,23 @@ Tap a day to change times and temperatures, delete or add entries, or copy that
 day to others. Changes save straight to the thermostat. After updating ProtoNest,
 refresh the browser (Ctrl+Shift+R) so it loads the new card.
 
+### Target sensor schedule
+
+The card's **Sensors** tab is a target sensor schedule that Home Assistant runs,
+rather than the thermostat. Unlike the thermostat's own sensor schedule (four
+fixed periods, the same every day), it can have any number of entries per day at
+any time. Each entry means "from this time on, control to these sensors": the
+thermostat's own sensor, one temperature sensor, or two or more sensors to
+average. Turn it on with the thermostat's **Target sensor schedule** switch.
+
+- At each entry ProtoNest sets the target sensor, like choosing it in the
+  Target sensor select. A sensor you pick by hand holds until the next entry.
+- If Home Assistant isn't running at an entry's time, the thermostat keeps its
+  current sensor and switches as soon as Home Assistant is back.
+- Turning it on switches the thermostat from its own sensor schedule to the
+  chosen sensor, so the two don't both run.
+- Scripts and automations can set it with `protonest.set_sensor_schedule`.
+
 ### Actions
 
 On a thermostat's climate entity:
@@ -99,6 +116,9 @@ On a thermostat's climate entity:
   weekly heat, cool or range schedule. Times are on quarter hours; temperatures
   are in the thermostat's display units.
 - `protonest.pair_sensor` / `unpair_sensor`: pair or unpair a temperature sensor.
+- `protonest.set_sensor_schedule`: replace the Home Assistant target sensor
+  schedule, as a list of `{day, time, sensors}` (`sensors: [thermostat]`, one
+  temperature sensor entity, or several to average).
 
 ## Things to know
 

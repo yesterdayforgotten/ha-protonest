@@ -18,6 +18,7 @@ from .pynestproto.client import NestClient
 from .pynestproto.observe import TraitCache
 from .pynestproto.transport import TransportError
 from .pynestproto.write import WriteError
+from .sensor_schedule import SensorScheduler
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ProtoNestCoordinator(DataUpdateCoordinator[TraitCache]):
         super().__init__(hass, _LOGGER, config_entry=entry, name=DOMAIN)
         self.client = client
         self.data = client.cache
+        self.sensor_schedule: SensorScheduler  # set up alongside, in __init__.py
         self._unsubs: list[Callable[[], None]] = [
             client.add_listener(self._on_changes),
             client.add_auth_failure_listener(self._on_auth_failure),

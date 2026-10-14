@@ -15,6 +15,8 @@ from .coordinator import ProtoNestConfigEntry, ProtoNestCoordinator, credentials
 from .pynestproto import codec
 from .pynestproto.auth import CredentialsRejected, GoogleCredentials
 from .pynestproto.client import NestClient
+from .pynestproto.model import Thermostat
+from .sensor_schedule import SensorScheduler
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -50,10 +52,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry) ->
 
     coordinator = ProtoNestCoordinator(hass, entry, client)
     entry.runtime_data = coordinator
+    coordinator.sensor_schedule = SensorScheduler(
+        hass, entry.entry_id,
+        thermostat=lambda rid: Thermostat(client.cache, rid) if rid in client.cache.resource_types else None,
+        write=coordinator.async_write,
+        on_change=coordinator.async_update_listeners,
+    )
+    await coordinator.sensor_schedule.async_load()
     # The coordinator (and with it the client) shuts down when the entry unloads.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(coordinator.sensor_schedule.stop)
+    await coordinator.sensor_schedule.async_start()
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry) -> None:
+    """Delete the entry's saved sensor schedules along with it."""
+    await SensorScheduler(hass, entry.entry_id, lambda _: None, None, lambda: None).async_remove()
