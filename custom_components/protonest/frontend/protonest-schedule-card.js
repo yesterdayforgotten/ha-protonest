@@ -23,6 +23,8 @@ const THERMOSTAT_COLOR = "#78909c";
 const DAY_SETS = { all: DAYS, weekdays: DAYS.slice(0, 5), weekend: DAYS.slice(5) }; // "Copy to…" shortcuts
 const DAY_SET_NAMES = { all: "All", weekdays: "Weekdays", weekend: "Weekend" };
 const DAY_FULL = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+// mdi:clock-outline
+const CLOCK_ICON = "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
 const DRAG_PX = 6; // how far a press moves before it's a drag rather than a tap
 
 const minutes = (hhmm) => {
@@ -99,6 +101,20 @@ class ProtoNestScheduleCard extends HTMLElement {
 
   getGridOptions() {
     return { columns: 12, min_columns: 6, rows: "auto" };
+  }
+
+  // A typed time: "5:30p", "5:30 PM", "530pm", "17:30", "1730", "7" (7:00). Minutes since midnight, or null.
+  static parseTime(text) {
+    const m = String(text).trim().toLowerCase().replace(/[\s.]/g, "").match(/^(\d{1,2})(?::?(\d{2}))?(?:([ap])m?)?$/);
+    if (!m) return null;
+    let h = Number(m[1]);
+    const min = m[2] ? Number(m[2]) : 0;
+    if (min > 59) return null;
+    if (m[3]) {
+      if (h < 1 || h > 12) return null;
+      h = (h % 12) + (m[3] === "p" ? 12 : 0);
+    } else if (h > 23) return null;
+    return h * 60 + min;
   }
 
   static getConfigElement() {
@@ -255,12 +271,17 @@ class ProtoNestScheduleCard extends HTMLElement {
   // Esc closes "Copy to", then the day; Enter saves the row being edited.
   _key(ev) {
     if (this._busy) return;
-    if (ev.key === "Escape" && (this._copyTo || this._open)) {
+    if (ev.key === "Escape" && ev.target && ev.target.dataset && ev.target.dataset.field === "time" && this._closeTimes(ev.target)) {
+      ev.preventDefault();
+    } else if (ev.key === "Escape" && (this._copyTo || this._open)) {
       ev.preventDefault();
       if (this._copyTo) {
         this._copyTo = null;
         this._render();
       } else this._openDay(this._open);
+    } else if ((ev.key === "ArrowUp" || ev.key === "ArrowDown") && ev.target && ev.target.dataset && ev.target.dataset.field === "time") {
+      ev.preventDefault();
+      this._stepTime(ev.target, ev.key === "ArrowUp" ? 1 : -1);
     } else if (ev.key === "Enter" && ev.target && ev.target.dataset && ev.target.dataset.field) {
       const i = Number(ev.target.dataset.i);
       if (this._rows && this._rows[i] && this._rows[i].dirty) {
@@ -268,6 +289,87 @@ class ProtoNestScheduleCard extends HTMLElement {
         this._saveRow(i);
       }
     }
+  }
+
+  _tidyTime(input) {
+    const row = this._rows && this._rows[Number(input.dataset.i)];
+    if (!row || !row.time) return;
+    row.time = quarter(row.time);
+    row.timeText = null;
+    input.value = this._fmtTime(minutes(row.time));
+  }
+
+  // ↑ / ↓ in a time field: 15 minutes later / earlier, wrapping around midnight.
+  _stepTime(input, dir) {
+    const row = this._rows && this._rows[Number(input.dataset.i)];
+    if (!row) return;
+    const at = row.time ? minutes(quarter(row.time)) : 8 * 60 - dir * STEP_MINUTES;
+    this._setTime(input, hhmm((at + dir * STEP_MINUTES + 24 * 60) % (24 * 60)));
+  }
+
+  // Keep the clock's list on the typed time, so picking any time registers as a change.
+  _syncPick(input, time) {
+    const box = input.closest && input.closest(".when");
+    const pick = box && box.querySelector("select");
+    if (pick) pick.value = time ? quarter(time) : "";
+    const list = box && box.querySelector(".times");
+    if (list) this._markTime(list, time);
+  }
+
+  // While a time field has focus, a list of quarter hours drops down under it;
+  // typing still works, and moves the list to what's typed.
+  _openTimes(input) {
+    const box = input.closest(".when");
+    if (!box || box.querySelector(".times")) return;
+    const list = document.createElement("div");
+    list.className = "times";
+    list.setAttribute("role", "listbox");
+    let html = "";
+    for (let m = 0; m < 24 * 60; m += STEP_MINUTES) html += `<div class="opt" role="option" data-time="${hhmm(m)}">${esc(this._fmtTime(m))}</div>`;
+    list.innerHTML = html;
+    // mousedown, not click: keep the focus in the field.
+    list.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      const opt = ev.target.closest(".opt");
+      if (!opt) return;
+      this._setTime(input, opt.dataset.time);
+      this._closeTimes(input);
+    });
+    box.appendChild(list);
+    const row = this._rows && this._rows[Number(input.dataset.i)];
+    this._markTime(list, row && row.time ? row.time : "08:00", !(row && row.time));
+  }
+
+  _closeTimes(input) {
+    const box = input.closest && input.closest(".when");
+    const list = box && box.querySelector(".times");
+    if (list) list.remove();
+    return !!list;
+  }
+
+  // Highlight a time in the list (unless only scrolling to it) and bring it into view.
+  _markTime(list, time, scrollOnly = false) {
+    const q = time ? quarter(time) : null;
+    let hit = null;
+    list.querySelectorAll(".opt").forEach((o) => {
+      const on = !scrollOnly && o.dataset.time === q;
+      o.classList.toggle("on", on);
+      if (o.dataset.time === q) hit = o;
+    });
+    if (hit) list.scrollTop = hit.offsetTop - list.clientHeight / 2 + hit.offsetHeight / 2;
+  }
+
+  _setTime(input, time) {
+    const row = this._rows && this._rows[Number(input.dataset.i)];
+    if (!row) return;
+    row.time = time;
+    row.timeText = null;
+    this._syncPick(input, time);
+    row.dirty = true;
+    input.value = this._fmtTime(minutes(row.time));
+    input.classList.remove("bad");
+    const entry = input.closest && input.closest(".entry");
+    if (entry) entry.classList.add("dirty");
   }
 
   // Tapping an entry on a bar opens its day with that entry highlighted.
@@ -336,7 +438,7 @@ class ProtoNestScheduleCard extends HTMLElement {
   }
 
   _invalid(row) {
-    if (!/^\d{1,2}:\d{2}/.test(row.time || "")) return "Enter a time.";
+    if (!/^\d{1,2}:\d{2}/.test(row.time || "")) return "Enter a time, like 5:30 PM or 17:30.";
     if (row.kind === SENSORS) return row.sensors && row.sensors.length ? null : "Choose a sensor.";
     if (Object.values(this._values(row, row.kind)).some((v) => v === null || v === undefined || Number.isNaN(v)))
       return "Enter a temperature.";
@@ -375,7 +477,7 @@ class ProtoNestScheduleCard extends HTMLElement {
           day, time: row.orig, ...(time !== row.orig ? { new_time: time } : {}), ...values,
         });
       }
-      Object.assign(row, { orig: time, time, dirty: false });
+      Object.assign(row, { orig: time, time, timeText: null, dirty: false });
       this._settled();
     });
   }
@@ -617,15 +719,18 @@ class ProtoNestScheduleCard extends HTMLElement {
       `<span class="picks">${this._options
         .map((o) => `<button class="pick ${r.sensors.includes(o.id) ? "on" : ""}" style="--c:${o.color}" data-act="pick" data-i="${i}" data-id="${esc(o.id)}" ${dis}>${esc(o.name)}</button>`)
         .join("")}</span>`;
-    // Times are picked from the quarter hours the thermostat takes, shown in HA's time format.
-    const timeSelect = (i, r) => {
-      const at = /^\d{1,2}:\d{2}/.test(r.time || "") ? minutes(r.time) : null;
+    // Times are typed (see parseTime), shown in HA's time format once entered.
+    const timeInput = (i, r) => {
+      const text = r.timeText != null ? r.timeText : /^\d{1,2}:\d{2}/.test(r.time || "") ? this._fmtTime(minutes(r.time)) : "";
+      // Beside it, a clock opens the quarter hours as a list (the system time wheel on a phone).
+      const at = /^\d{1,2}:\d{2}/.test(r.time || "") ? minutes(quarter(r.time)) : null;
       const opts = [];
-      for (let m = 0; m < 24 * 60; m += STEP_MINUTES) opts.push(m);
-      if (at !== null && !opts.includes(at)) opts.push(at), opts.sort((a, b) => a - b);
-      return `<select class="time" data-i="${i}" data-field="time" ${dis}>${opts
-        .map((m) => `<option value="${hhmm(m)}" ${m === at ? "selected" : ""}>${esc(this._fmtTime(m))}</option>`)
-        .join("")}</select>`;
+      for (let m = 0; m < 24 * 60; m += STEP_MINUTES) opts.push(`<option value="${hhmm(m)}" ${m === at ? "selected" : ""}>${esc(this._fmtTime(m))}</option>`);
+      return `<span class="when">
+          <input class="time" type="text" autocomplete="off" spellcheck="false" placeholder="5:30 PM" value="${esc(text)}" data-i="${i}" data-field="time" title="Type a time, like 5:30p or 17:30. ↑ ↓ change it by 15 minutes." ${dis}>
+          <span class="clock" title="Pick a time"><svg viewBox="0 0 24 24"><path d="${CLOCK_ICON}"/></svg>
+            <select data-pick-time="${i}" aria-label="Pick a time" ${dis}>${at === null ? '<option value="" selected></option>' : ""}${opts.join("")}</select></span>
+        </span>`;
     };
     // A sensor row shows what it picks; tapping that opens the picker below it.
     const summary = (i, r) => `
@@ -634,7 +739,7 @@ class ProtoNestScheduleCard extends HTMLElement {
       </button>`;
     const row = (r, i) => `
       <div class="entry ${r.dirty ? "dirty" : ""} ${r.focus ? "focus" : ""}">
-        ${timeSelect(i, r)}
+        ${timeInput(i, r)}
         ${r.kind === SENSORS
           ? summary(i, r)
           : `<span class="temps">${r.kind === "range" ? `${num(i, "target_temp_low", r.target_temp_low)}<span class="dash">–</span>${num(i, "target_temp_high", r.target_temp_high)}` : num(i, "temperature", r.temperature)}<span class="unit">${esc(this._unit)}</span></span>`}
@@ -765,13 +870,25 @@ class ProtoNestScheduleCard extends HTMLElement {
       el.addEventListener("pointerup", (ev) => this._dragEnd(ev));
       el.addEventListener("pointercancel", (ev) => this._dragEnd(ev, true));
     });
+    root.querySelectorAll("select[data-pick-time]").forEach((pick) => {
+      pick.addEventListener("change", () => {
+        const input = pick.closest(".when").querySelector("input.time");
+        if (pick.value) this._setTime(input, pick.value);
+      });
+    });
     const sets = root.querySelector("select.sets");
     if (sets) sets.addEventListener("change", () => sets.value && this._copySet(sets.value));
     root.querySelectorAll("[data-field]").forEach((input) => {
       const onEdit = () => {
         const row = this._rows[Number(input.dataset.i)];
         const field = input.dataset.field;
-        row[field] = field === "time" ? input.value : input.value === "" ? null : Number(input.value);
+        if (field === "time") {
+          const at = ProtoNestScheduleCard.parseTime(input.value);
+          row.timeText = input.value;
+          row.time = at === null ? "" : hhmm(at);
+          input.classList.toggle("bad", at === null && input.value.trim() !== "");
+          this._syncPick(input, row.time);
+        } else row[field] = input.value === "" ? null : Number(input.value);
         if (!row.dirty) {
           row.dirty = true;
           const entry = input.closest(".entry");
@@ -780,6 +897,15 @@ class ProtoNestScheduleCard extends HTMLElement {
       };
       input.addEventListener("input", onEdit);
       input.addEventListener("change", onEdit);
+      // Leaving a time field rounds it to the quarter hour and shows it in HA's format.
+      if (input.dataset.field === "time") {
+        input.addEventListener("focus", () => this._openTimes(input));
+        input.addEventListener("click", () => this._openTimes(input)); // reopens it after a pick
+        input.addEventListener("blur", () => {
+          this._closeTimes(input);
+          this._tidyTime(input);
+        });
+      }
     });
     if (this._scroll) {
       this._scroll = false;
@@ -867,7 +993,19 @@ const STYLE = `
   input:disabled { opacity: 0.6; }
   select { font: inherit; color: var(--primary-text-color); background: var(--card-background-color, #fff);
            border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 2px; }
-  .time { width: 6.6em; flex: none; } .temp { width: 4em; }
+  .time { width: 6.2em; flex: none; } .temp { width: 4em; }
+  input.bad { border-color: var(--error-color, #db4437); }
+  .when { position: relative; display: flex; align-items: center; gap: 2px; flex: none; }
+  .times { position: absolute; top: 100%; left: 0; z-index: 10; margin-top: 2px; width: 7.5em; max-height: 220px; overflow-y: auto;
+           background: var(--card-background-color, #fff); border: 1px solid var(--divider-color); border-radius: 6px;
+           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); padding: 4px 0; }
+  .times .opt { padding: 3px 10px; cursor: pointer; font-size: 0.9em; color: var(--primary-text-color); white-space: nowrap; }
+  .times .opt:hover { background: var(--secondary-background-color); }
+  .times .opt.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+  .clock { position: relative; display: flex; padding: 4px; border-radius: 50%; color: var(--secondary-text-color); }
+  .clock:hover { color: var(--primary-color); background: var(--card-background-color, #fff); }
+  .clock svg { width: 20px; height: 20px; fill: currentColor; }
+  .clock select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; padding: 0; border: none; }
   .temps { display: flex; align-items: center; gap: 4px; }
   .picks { display: flex; flex-wrap: wrap; gap: 6px; }
   .pick { border: 1px solid var(--c); background: none; color: var(--primary-text-color); border-radius: 12px;
