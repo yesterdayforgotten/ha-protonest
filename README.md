@@ -52,7 +52,11 @@ ProtoNest signs in with your Google session, captured from a browser once.
 Google replaces some session cookies every time a token is issued; ProtoNest
 saves the new ones automatically. Don't use the same capture in two places (two
 installs, or HA and a script): each would replace cookies the other still uses.
-If Google ever rejects the session, Home Assistant asks for a new capture.
+If Google ever rejects the session, your Nest devices go unavailable, Home
+Assistant shows a notification, and ProtoNest asks for a new capture
+(**Settings → Devices & services → ProtoNest → Reconfigure**). To get that alert
+on your phone too, open ProtoNest's **Configure** options and choose its notify
+service (for example `mobile_app_your_phone`).
 
 ## What you get
 
@@ -66,10 +70,22 @@ For each thermostat:
 | Switch | Fan schedule, Auto-Schedule, Home/Away Assist, Cool to Dry, Sunblock, Airwave, wake on approach, filter reminder, humidity control, run fan while humidifying, eco and safety limits on/off |
 | Number | Eco heating/cooling limits, safety low/high limits, filter reminder threshold (runtime hours) |
 | Button | Filter replaced |
-| Sensor | Temperature, humidity, thermostat's own sensor, filter runtime / reminder level / last changed, time to target, compressor lockout, running stages, battery voltage |
-| Binary sensor | Filter replacement needed, Leaf, fan running, online |
+| Sensor | Temperature, humidity, thermostat's own sensor, filter runtime / reminder level / last changed, time to target, compressor lockout, running stages, Seasonal Savings status, battery voltage, Wi-Fi signal |
+| Binary sensor | Filter replacement needed, Leaf, heating, cooling, fan running, online |
+
+For the home (a "Nest" device named after your Nest home):
+
+| Platform | Entities |
+|---|---|
+| Sensor | Home/Away (home, away, sleep or vacation), last HVAC alert |
+| Switch | HVAC alerts (Nest's heads-up when heating or cooling doesn't seem to work properly) |
 
 For each temperature sensor: temperature and battery voltage.
+
+Nest doesn't make its heating and cooling run-time history available through
+this API. To track run time, add Home Assistant's **History stats** helper on a
+thermostat's **Heating** or **Cooling** sensor (state `on`, type *time*), for
+example for today or the last 7 days.
 
 Thermostats and temperature sensors get Nest-style icons (`protonest:thermostat`,
 `protonest:sensor`), which you can also choose for other entities in the icon picker.
@@ -158,8 +174,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest                     # client library tests
 docker build -f dev/Dockerfile.test -t protonest-test dev
 docker run --rm -v "$PWD":/work -w /work protonest-test python -m pytest tests_ha   # HA tests
+node tests_card/schedule-card.test.mjs         # schedule card logic
 docker compose -f dev/docker-compose.yml up -d # dev Home Assistant on :8123
 ```
+
+GitHub runs all of these (and hassfest) on every push, and before publishing a
+release.
 
 - `custom_components/protonest/pynestproto/` is the Home Assistant–independent
   client: auth, transport, Observe stream cache, read-modify-write writes, and

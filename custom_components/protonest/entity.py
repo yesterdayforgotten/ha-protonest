@@ -10,22 +10,27 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import ProtoNestCoordinator
-from .pynestproto.model import RemoteSensor, Thermostat
+from .pynestproto.model import RemoteSensor, Structure, Thermostat
+
+_MODELS = {Thermostat: "Nest Learning Thermostat", RemoteSensor: "Nest Temperature Sensor", Structure: "Nest home"}
 
 
 class ProtoNestEntity(CoordinatorEntity[ProtoNestCoordinator]):
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: ProtoNestCoordinator, device: Thermostat | RemoteSensor, key: str) -> None:
+    def __init__(
+        self, coordinator: ProtoNestCoordinator, device: Thermostat | RemoteSensor | Structure, key: str
+    ) -> None:
         super().__init__(coordinator)
         self.resource_id = device.resource_id
-        self._is_thermostat = isinstance(device, Thermostat)
+        self._kind = type(device)
+        self._is_thermostat = self._kind is Thermostat
         self._attr_unique_id = f"{device.resource_id}-{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.resource_id)},
             name=device.name,
             manufacturer="Google Nest",
-            model=device.model or ("Nest Learning Thermostat" if self._is_thermostat else "Nest Temperature Sensor"),
+            model=device.model or _MODELS[self._kind],
             model_id=device.model_id if device.model_id != device.model else None,
             serial_number=device.serial_number,
             sw_version=device.firmware,
@@ -33,8 +38,7 @@ class ProtoNestEntity(CoordinatorEntity[ProtoNestCoordinator]):
 
     @property
     def device(self) -> Thermostat:
-        cls = Thermostat if self._is_thermostat else RemoteSensor
-        return cls(self.coordinator.client.cache, self.resource_id)
+        return self._kind(self.coordinator.client.cache, self.resource_id)
 
     @property
     def available(self) -> bool:

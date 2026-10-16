@@ -345,3 +345,33 @@ async def test_fired_confirmation_timers_are_dropped(session, gateway):
     await client.async_update(THERMOSTAT1, TARGET, set_target_temperature(cool=25.0))
     assert len(client._timers) == 1
     await client.async_stop()
+
+
+async def test_home_settings_writes_need_no_device_confirmation(session, gateway):
+    from pynestproto.observe import ACCEPTED
+    from pynestproto.write import set_hvac_alerts
+
+    home = "STRUCTURE_0000000000000D01"
+    alerts = hvac_pb2.HvacDiagnosticsAlertsSettingsTrait()
+    alerts.enableAlerts.value = True
+    client = await ready_client(session, gateway)
+    ts = v2_pb2.TraitState(
+        traitId=v2_pb2.TraitId(resourceId=home, traitLabel="hvac_diagnostics_alerts_settings"),
+        stateTypes=[ACCEPTED], patch=v2_pb2.Patch(values=codec.pack(alerts)), monotonicVersion=1,
+    )
+    await gateway.pushes.put(codec.ObserveFrame(traitStates=[ts]).SerializeToString())
+    await asyncio.sleep(0.2)
+    await client.async_update(home, "hvac_diagnostics_alerts_settings", set_hvac_alerts(False))
+    assert client._pending == {}  # the home is never "unresponsive"
+    await asyncio.sleep(0.5)
+    assert client.responsive(home)
+    await client.async_stop()
+
+
+async def test_rejected_credentials_are_reported_once(session, gateway):
+    client = make_client(session, gateway)
+    failures = []
+    client.add_auth_failure_listener(lambda: failures.append(1))
+    client._auth_failed("No active session found.")
+    client._auth_failed("No active session found.")
+    assert failures == [1]

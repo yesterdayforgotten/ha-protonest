@@ -8,11 +8,18 @@ from typing import Any
 
 import aiohttp
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+)
 
-from .const import CONF_COOKIES, CONF_ISSUE_TOKEN, DOMAIN
+from .const import CONF_COOKIES, CONF_ISSUE_TOKEN, CONF_NOTIFY, DOMAIN
 from .pynestproto.auth import AuthUnavailable, CredentialsRejected, NestAuth, parse_capture
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +33,11 @@ class ProtoNestConfigFlow(ConfigFlow, domain=DOMAIN):
     issue token URL and the cookies on two lines)."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return ProtoNestOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
@@ -65,3 +77,24 @@ class ProtoNestConfigFlow(ConfigFlow, domain=DOMAIN):
             return None, None, "cannot_connect", str(err)
         final = auth.credentials  # includes cookies Google rotated just now
         return {CONF_ISSUE_TOKEN: final.issue_token, CONF_COOKIES: final.cookies}, token.user_id, None, ""
+
+
+# Notify services that aren't a destination of their own.
+_NOT_TARGETS = {"persistent_notification", "send_message", "notify"}
+
+
+class ProtoNestOptionsFlow(OptionsFlow):
+    """Where else to send the alert when Google stops accepting the sign-in."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        current = self.config_entry.options.get(CONF_NOTIFY, [])
+        services = set(self.hass.services.async_services_for_domain("notify")) - _NOT_TARGETS
+        schema = vol.Schema({
+            vol.Optional(CONF_NOTIFY, default=current): SelectSelector(SelectSelectorConfig(
+                options=sorted(services | set(current)), multiple=True, custom_value=True,
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+        })
+        return self.async_show_form(step_id="init", data_schema=schema)

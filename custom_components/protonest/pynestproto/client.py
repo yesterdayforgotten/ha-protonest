@@ -47,6 +47,7 @@ UNRESPONSIVE_AFTER = 120
 OVERRIDE_WINDOW = 30
 SETTLE_SECONDS = 1.5  # the initial snapshot is complete after this much quiet
 _BACKOFF = (2, 5, 15, 30, 60, 120, 300)
+_DEVICE_PREFIX = "DEVICE_"
 
 ChangeListener = Callable[[list[TraitChange]], None]
 OverrideListener = Callable[[str, str], None]  # (resource_id, trait label)
@@ -265,6 +266,8 @@ class NestClient:
                 _LOGGER.exception("protonest change listener failed")
 
     def _auth_failed(self, message: str) -> None:
+        if self.status.auth_failed:
+            return  # already reported (e.g. by a write, then the stream)
         _LOGGER.warning("Nest rejected the credentials: %s", message)
         self.status = ConnectionStatus(connected=False, last_error=message, auth_failed=True)
         self._auth_failed_event.set()
@@ -311,6 +314,8 @@ class NestClient:
             if op is not None:
                 ours = unechoed[0] if unechoed is not None else ([now_shown] if now_shown is not None else [])
                 self._unechoed[key] = ([*ours, prepared.new], prepared.new)
+                if not resource_id.startswith(_DEVICE_PREFIX):
+                    return op  # home (structure) settings are never confirmed by a device
                 self._pending.setdefault(key, []).append(_Sent(prepared.new, time.monotonic()))
                 self._recent.pop(key, None)
                 # Re-check once the confirmation deadline has passed.

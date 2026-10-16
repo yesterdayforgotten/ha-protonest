@@ -900,3 +900,19 @@ def set_filter_threshold(hours: float) -> Callable[[hvac_pb2.FilterReminderSetti
         trait.filterReplacementThreshold.FromSeconds(int(hours * 3600))
 
     return mutate
+
+
+# --- Home (structure) settings -----------------------------------------------------------------
+# These live on the STRUCTURE_ resource. Nest emails a heads-up when it notices
+# heating or cooling that isn't working as expected (HVAC monitoring alerts).
+
+ALERTS_LABEL = "hvac_diagnostics_alerts_settings"
+
+
+def set_hvac_alerts(on: bool) -> Callable[[hvac_pb2.HvacDiagnosticsAlertsSettingsTrait], None]:
+    """Mutation: HVAC monitoring alerts on or off."""
+
+    def mutate(trait: hvac_pb2.HvacDiagnosticsAlertsSettingsTrait) -> None:
+        trait.enableAlerts.value = on
+
+    return mutate

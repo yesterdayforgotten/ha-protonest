@@ -12,8 +12,9 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import ProtoNestConfigEntry
 from .entity import ProtoNestEntity, validation_errors
-from .pynestproto.model import Thermostat, thermostats
+from .pynestproto.model import Thermostat, structures, thermostats
 from .pynestproto.write import (
+    ALERTS_LABEL,
     EQUIPMENT_LABEL,
     SETTING_FLAGS,
     THRESHOLDS,
@@ -21,6 +22,7 @@ from .pynestproto.write import (
     set_flag,
     set_humidifier,
     set_humidity_control,
+    set_hvac_alerts,
     set_threshold,
 )
 
@@ -96,6 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry, as
     async_add_entities(
         [ProtoNestSwitch(c, t, d) for t in thermostats(c.client.cache) for d in SWITCHES if d.exists(t)]
         + [SensorScheduleSwitch(c, t) for t in thermostats(c.client.cache)]
+        + [HvacAlertsSwitch(c, h) for h in structures(c.client.cache) if h.hvac_alerts is not None]
     )
 
 
@@ -143,3 +146,25 @@ class SensorScheduleSwitch(ProtoNestEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.sensor_schedule.async_set_enabled(self.resource_id, False)
+
+
+class HvacAlertsSwitch(ProtoNestEntity, SwitchEntity):
+    """Nest's HVAC monitoring alerts for the home: a heads-up when heating or
+    cooling doesn't seem to be working as it should."""
+
+    _attr_name = "HVAC alerts"
+    _attr_icon = "mdi:hvac"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, home) -> None:
+        super().__init__(coordinator, home, "hvac_alerts")
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.device.hvac_alerts
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.write(ALERTS_LABEL, set_hvac_alerts(True))
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.write(ALERTS_LABEL, set_hvac_alerts(False))

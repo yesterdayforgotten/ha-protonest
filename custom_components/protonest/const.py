@@ -6,6 +6,7 @@ DOMAIN = "protonest"
 
 CONF_ISSUE_TOKEN = "issue_token"
 CONF_COOKIES = "cookies"
+CONF_NOTIFY = "notify"  # option: notify services that also get the sign-in alert
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,

@@ -7,12 +7,19 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfElectricPotential, UnitOfTemperature, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfElectricPotential,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 
 from .coordinator import ProtoNestConfigEntry
 from .entity import ProtoNestEntity
-from .pynestproto.model import remote_sensors, thermostats
+from .pynestproto.model import SAVINGS_STATES, STRUCTURE_MODES, remote_sensors, structures, thermostats
 
 PARALLEL_UPDATES = 0
 
@@ -59,6 +66,13 @@ THERMOSTAT_SENSORS: tuple[ProtoNestSensorDescription, ...] = (
         key="battery_voltage", name="Battery voltage", device_class=SensorDeviceClass.VOLTAGE,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT, entity_category=EntityCategory.DIAGNOSTIC,
         suggested_display_precision=2, value=lambda t: t.battery_voltage),
+    ProtoNestSensorDescription(
+        key="wifi_signal", name="Wi-Fi signal", device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT, state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC, value=lambda t: t.wifi_signal),
+    ProtoNestSensorDescription(
+        key="seasonal_savings", name="Seasonal Savings", device_class=SensorDeviceClass.ENUM,
+        options=SAVINGS_STATES, icon="mdi:leaf-circle-outline", value=lambda t: t.seasonal_savings),
 )
 
 REMOTE_SENSORS: tuple[ProtoNestSensorDescription, ...] = (
@@ -73,12 +87,22 @@ REMOTE_SENSORS: tuple[ProtoNestSensorDescription, ...] = (
 )
 
 
+HOME_SENSORS: tuple[ProtoNestSensorDescription, ...] = (
+    ProtoNestSensorDescription(
+        key="mode", name="Home/Away", device_class=SensorDeviceClass.ENUM,
+        options=sorted(STRUCTURE_MODES.values()), icon="mdi:home-account", value=lambda h: h.mode),
+    ProtoNestSensorDescription(
+        key="last_hvac_alert", name="Last HVAC alert", device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:hvac-off", value=lambda h: h.last_hvac_alert),
+)
+
 async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry, async_add_entities) -> None:
     c = entry.runtime_data
     cache = c.client.cache
     async_add_entities(
         [ProtoNestSensor(c, t, d) for t in thermostats(cache) for d in THERMOSTAT_SENSORS]
         + [ProtoNestSensor(c, s, d) for s in remote_sensors(cache) for d in REMOTE_SENSORS]
+        + [ProtoNestSensor(c, h, d) for h in structures(cache) for d in HOME_SENSORS]
     )
 
 

@@ -34,6 +34,13 @@ BINARY_SENSORS: tuple[ProtoNestBinaryDescription, ...] = (
     ProtoNestBinaryDescription(
         key="fan_running", name="Fan running", device_class=BinarySensorDeviceClass.RUNNING,
         value=lambda t: t.fan_running),
+    # For run-time tracking, e.g. with the History stats helper.
+    ProtoNestBinaryDescription(
+        key="heating", name="Heating", device_class=BinarySensorDeviceClass.RUNNING, icon="mdi:fire",
+        value=lambda t: t.hvac_action == "heating" if t.hvac_action is not None else None),
+    ProtoNestBinaryDescription(
+        key="cooling", name="Cooling", device_class=BinarySensorDeviceClass.RUNNING, icon="mdi:snowflake",
+        value=lambda t: t.hvac_action == "cooling" if t.hvac_action is not None else None),
     ProtoNestBinaryDescription(
         key="online", name="Online", device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC, value=lambda t: t.online),  # see ProtoNestBinary

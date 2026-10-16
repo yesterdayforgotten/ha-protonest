@@ -20,6 +20,17 @@
       "wrong_account": "Those credentials belong to a different Nest account."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sign-in alerts",
+        "description": "If Google stops accepting ProtoNest's sign-in, Home Assistant shows a notification. Choose notify services to also send it to, such as your phone (notify.mobile_app_…).",
+        "data": {
+          "notify": "Also notify"
+        }
+      }
+    }
+  },
   "services": {
     "run_fan": {
       "name": "Run fan",

@@ -1,0 +1,47 @@
+name: Tests
+
+# Runs on every push and pull request, and before a release (release.yml).
+# Tests that compare against recordings of a real home skip here: those
+# recordings are personal and not in the repository.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests -q
+
+  home-assistant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f dev/Dockerfile.test -t protonest-test dev
+      - run: docker run --rm -v "$PWD":/work -w /work protonest-test pytest tests_ha -q -p no:cacheprovider
+
+  card:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node tests_card/schedule-card.test.mjs
+
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master

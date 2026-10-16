@@ -12,8 +12,10 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .auth_alert import async_report_auth_failure
 from .const import CONF_COOKIES, CONF_ISSUE_TOKEN, DOMAIN
 from .pynestproto.auth import AuthError, GoogleCredentials
+from .pynestproto.codec import StreamError
 from .pynestproto.client import NestClient
 from .pynestproto.observe import TraitCache
 from .pynestproto.transport import TransportError
@@ -46,6 +48,7 @@ class ProtoNestCoordinator(DataUpdateCoordinator[TraitCache]):
     @callback
     def _on_auth_failure(self) -> None:
         self.config_entry.async_start_reauth(self.hass)
+        async_report_auth_failure(self.hass, self.config_entry)
         self.async_update_listeners()  # entities go unavailable
 
     @callback
@@ -81,7 +84,7 @@ class ProtoNestCoordinator(DataUpdateCoordinator[TraitCache]):
             await self.client.async_update(resource_id, label, mutate, check)
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
-        except (WriteError, TransportError, AuthError) as err:
+        except (WriteError, TransportError, AuthError, StreamError) as err:
             raise HomeAssistantError(f"Nest rejected the change: {err}") from err
 
     async def async_shutdown(self) -> None:

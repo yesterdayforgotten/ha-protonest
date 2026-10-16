@@ -9,6 +9,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.typing import ConfigType
 
+from .auth_alert import async_clear_auth_failure, async_report_auth_failure
 from .const import CONF_COOKIES, DOMAIN, PLATFORMS
 from .web import async_register_frontend
 from .coordinator import ProtoNestConfigEntry, ProtoNestCoordinator, credentials_from
@@ -44,12 +45,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ProtoNestConfigEntry) ->
         await client.async_wait_ready(timeout=45)
     except CredentialsRejected as err:
         await client.async_stop()
+        async_report_auth_failure(hass, entry)
         raise ConfigEntryAuthFailed(str(err)) from err
     except TimeoutError as err:
         last = client.status.last_error
         await client.async_stop()
         raise ConfigEntryNotReady(f"no data from Nest yet{f': {last}' if last else ''}") from err
 
+    async_clear_auth_failure(hass, entry)
     coordinator = ProtoNestCoordinator(hass, entry, client)
     entry.runtime_data = coordinator
     coordinator.sensor_schedule = SensorScheduler(

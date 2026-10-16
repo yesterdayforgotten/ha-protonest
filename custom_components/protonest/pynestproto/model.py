@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from google.protobuf import message as pb_message
 
 from .observe import TraitCache
-from .proto_gen.nest.trait import hvac_pb2
+from .proto_gen.nest.trait import hvac_pb2, occupancy_pb2
 from .write import (
     DAYS,
     DISPLAY_FARSIGHT,
@@ -27,6 +27,7 @@ from .write import (
 )
 
 THERMOSTAT_TYPES = ("nest.resource.NestLearningThermostat3Resource",)
+STRUCTURE_TYPE = "nest.resource.structure.StructureResource"
 SENSOR_TYPE = "nest.resource.NestKryptoniteResource"
 SENSOR_AVERAGE = "average"  # active sensor choice when averaging
 
@@ -406,6 +407,20 @@ class Thermostat(Device):
         return hvac_pb2.FilterReminderTrait.FilterReminderLevel.Name(f.currentFilterReminderLevel).removeprefix(
             "FILTER_REMINDER_LEVEL_").lower()
 
+    @property
+    def wifi_signal(self) -> int | None:
+        """Wi-Fi signal strength in dBm (reported as a positive number)."""
+        w = self.trait("wifi_interface")
+        return -abs(w.rssi) if w is not None and w.rssi else None
+
+    @property
+    def seasonal_savings(self) -> str | None:
+        """Where the thermostat is in a Seasonal Savings offer; None if it never had one."""
+        s = self.trait("seasonal_savings")
+        if s is None or not s.state:
+            return None
+        return _SAVINGS_STATES.get(s.state, "unknown")
+
     # --- weekly schedules -------------------------------------------------------------------------
 
     def schedule(self, kind: str) -> list[tuple[str, int, float | None, float | None]]:
@@ -428,3 +443,49 @@ def thermostats(cache: TraitCache) -> list[Thermostat]:
 
 def remote_sensors(cache: TraitCache) -> list[RemoteSensor]:
     return [RemoteSensor(cache, rid) for rid, t in cache.resource_types.items() if t == SENSOR_TYPE]
+
+
+def structures(cache: TraitCache) -> list[Structure]:
+    return [Structure(cache, rid) for rid, t in cache.resource_types.items() if t == STRUCTURE_TYPE]
+
+
+_SM = occupancy_pb2.StructureModeTrait
+STRUCTURE_MODES = {_SM.STRUCTURE_MODE_HOME: "home", _SM.STRUCTURE_MODE_AWAY: "away",
+                   _SM.STRUCTURE_MODE_SLEEP: "sleep", _SM.STRUCTURE_MODE_VACATION: "vacation"}
+_SS = hvac_pb2.SeasonalSavingsTrait
+_SAVINGS_STATES = {
+    _SS.SEASONAL_SAVINGS_STATE_INITIAL: "waiting_to_qualify",
+    _SS.SEASONAL_SAVINGS_STATE_WAITING_TO_QUALIFY: "waiting_to_qualify",
+    _SS.SEASONAL_SAVINGS_STATE_PRESENTING_EVENT: "offered",
+    _SS.SEASONAL_SAVINGS_STATE_WAITING: "starting",
+    _SS.SEASONAL_SAVINGS_STATE_RUNNING: "running",
+    _SS.SEASONAL_SAVINGS_STATE_PAUSED: "paused",
+    _SS.SEASONAL_SAVINGS_STATE_PRESENTING_FINAL_STAGE_COMPLETED: "completed",
+    _SS.SEASONAL_SAVINGS_STATE_AFTERGLOW: "completed",
+    _SS.SEASONAL_SAVINGS_STATE_FINISHED: "finished",
+}
+SAVINGS_STATES = sorted(set(_SAVINGS_STATES.values())) + ["unknown"]
+
+
+class Structure(Device):
+    """The Nest home: Home/Away and HVAC alerts."""
+
+    @property
+    def name(self) -> str:
+        info = self.trait("structure_info")
+        return f"Nest {info.name}" if info is not None and info.name else "Nest home"
+
+    @property
+    def mode(self) -> str | None:
+        m = self.trait("structure_mode")
+        return STRUCTURE_MODES.get(m.structureMode) if m is not None else None
+
+    @property
+    def hvac_alerts(self) -> bool | None:
+        a = self.trait("hvac_diagnostics_alerts_settings")
+        return a.enableAlerts.value if a is not None and a.HasField("enableAlerts") else None
+
+    @property
+    def last_hvac_alert(self) -> datetime | None:
+        a = self.trait("hvac_diagnostics_alerts_settings")
+        return _ts(a.lastAlertTime) if a is not None and a.HasField("lastAlertTime") else None

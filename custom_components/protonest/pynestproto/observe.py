@@ -64,7 +64,6 @@ OBSERVED_TRAITS: tuple[type[pb_message.Message], ...] = (
     hvac_pb2.UtilitySettingsTrait,
     hvac_pb2.HvacDiagnosticsAlertsSettingsTrait,
     hvac_pb2.SeasonalSavingsSettingsTrait,
-    occupancy_pb2.StructureModeSettingsTrait,  # sleep schedule
     # Read-only state
     hvac_pb2.RemoteComfortSensingStateTrait,  # per-sensor insights, multi-sensor reading
     hvac_pb2.CoolToDryTrait,
@@ -76,6 +75,7 @@ OBSERVED_TRAITS: tuple[type[pb_message.Message], ...] = (
     detector_pb2.AmbientMotionTrait,
     firmware_pb2.FirmwareTrait,
     network_pb2.RadioSignalStrengthTrait,
+    network_pb2.WifiInterfaceTrait,  # Wi-Fi signal
     # Sensors (thermostat and KR1 remote sensors)
     sensor_pb2.TemperatureTrait,
     sensor_pb2.HumidityTrait,
